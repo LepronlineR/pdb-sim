@@ -24,7 +24,10 @@
     <ClCompile Include="heap.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="tlsf\tlsf.c">
+    <ClCompile Include="..\lib\tlsf\tlsf.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="debug.c">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
@@ -35,7 +38,10 @@
     <ClInclude Include="heap.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="tlsf\tlsf.h">
+    <ClInclude Include="..\lib\tlsf\tlsf.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="debug.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

@@ -1,4 +1,5 @@
-#pragma once
+#ifndef __WM_H__
+#define __WM_H__
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -55,10 +56,11 @@ uint32_t wmGetKeyMask(wm_window_t* window);
 
 // Get the mouse location from the window and places it in (x, y)
 //
-// RETURN: NONE
 void wmGetMouseLoc(wm_window_t* window, int* x, int* y);
 
 // Get the raw OS window object (HWND)
 //
 // RETURN: window object
 void* wmGetHWND(wm_window_t* window);
+
+#endif

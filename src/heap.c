@@ -8,7 +8,7 @@
 #include <windows.h>
 
 typedef struct object_t {
-	struct arena_t* next;
+	struct object_t* next;
 	bool marked;
 	size_t size;
 	void* data;

@@ -1,4 +1,5 @@
-#pragma once
+#ifndef __HEAP_H__
+#define __HEAP_H__
 
 typedef struct heap_t heap_t;
 
@@ -19,3 +20,5 @@ void* heapAlloc(heap_t* heap, size_t size, size_t alignment);
 
 // Free memory previously allocated from a heap.
 void heapFree(heap_t* heap, void* address);
+
+#endif
