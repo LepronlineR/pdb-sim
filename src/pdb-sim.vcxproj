@@ -134,21 +134,30 @@
     <ClCompile Include="..\lib\tlsf\tlsf.c" />
     <ClCompile Include="atomic.c" />
     <ClCompile Include="debug.c" />
+    <ClCompile Include="deque.c" />
+    <ClCompile Include="event.c" />
+    <ClCompile Include="fs.c" />
     <ClCompile Include="heap.c" />
     <ClCompile Include="main.c" />
     <ClCompile Include="mutex.c" />
     <ClCompile Include="semaphore.c" />
     <ClCompile Include="test.c" />
+    <ClCompile Include="thread.c" />
     <ClCompile Include="wm.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\lib\tlsf\tlsf.h" />
     <ClInclude Include="atomic.h" />
     <ClInclude Include="debug.h" />
+    <ClInclude Include="deque.h" />
+    <ClInclude Include="event.h" />
+    <ClInclude Include="fs.h" />
+    <ClInclude Include="hashtable.h" />
     <ClInclude Include="heap.h" />
     <ClInclude Include="mutex.h" />
     <ClInclude Include="semaphore.h" />
     <ClInclude Include="test.h" />
+    <ClInclude Include="thread.h" />
     <ClInclude Include="wm.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

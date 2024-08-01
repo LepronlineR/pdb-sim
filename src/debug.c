@@ -40,8 +40,7 @@ void debugPrintConsole(const char* format, ...) {
 	char buffer[256] = { 0 };
 	va_list args;
 	va_start(args, format);
-	OutputDebugStringA(buffer);
-	va_end(args);
+	vsnprintf(buffer, sizeof(buffer), format, args);
 
 	OutputDebugStringA(buffer);
 
@@ -50,6 +49,7 @@ void debugPrintConsole(const char* format, ...) {
 	DWORD written = 0;
 	HANDLE console = GetStdHandle(STD_OUTPUT_HANDLE);
 	WriteConsoleA(console, buffer, bytes, &charsWritten, NULL);
+	va_end(args);
 }
 
 void debugInstallExceptionHandler() {
@@ -61,7 +61,7 @@ void debugSetPrintMask(uint32_t mask) {
 }
 
 void debugPrint(uint32_t type, _Printf_format_string_ const char* format, ...) {
-	if (debug_mask & type == 0)
+	if ((debug_mask & type) == 0)
 		return;
 
 	debugPrintConsole(format);
@@ -80,9 +80,7 @@ void debugBacktraceManually(){
 	SymInitialize(h_proc, NULL, TRUE);
 	unsigned short frames = debugBacktrace(stack, 32);
 
-	HANDLE console = GetStdHandle(STD_OUTPUT_HANDLE);
-
-	debugPrintConsole(&console, "\n---------------------------- CALL STACK -------------------------------\n");
+	debugPrintConsole("\n---------------------------- CALL STACK -------------------------------\n");
 	for (USHORT x = 1; x < frames; x++) {
 		DWORD64 address = (DWORD64)(stack[x]);
 		DWORD displacement = { 0 };
@@ -91,12 +89,12 @@ void debugBacktraceManually(){
 
 		if (SymFromAddr(h_proc, (DWORD64)(stack[x]), 0, &symbol)
 			&& SymGetLineFromAddr64(h_proc, (DWORD64)(stack[x]), &displacement, &line)) {
-			debugPrintConsole(&console, "[%i] %s - 0x%0llX (%s:%lu)\n", frames - x - 1, symbol->Name, symbol->Address, line.FileName, line.LineNumber);
+			debugPrintConsole("[%i] %s - 0x%0llX (%s:%lu)\n", frames - x - 1, symbol->Name, symbol->Address, line.FileName, line.LineNumber);
 		} else {
-			debugPrintConsole(&console, "%i: [Error: %lu] - 0x%0llX\n", frames - x - 1, GetLastError(), address);
+			debugPrintConsole("%i: [Error: %lu] - 0x%0llX\n", frames - x - 1, GetLastError(), address);
 		}
 	}
-	debugPrintConsole(&console, "-----------------------------------------------------------------------\n");
+	debugPrintConsole("-----------------------------------------------------------------------\n");
 
 	SymCleanup(h_proc);
 	free(symbol);
