@@ -135,12 +135,14 @@
     <ClCompile Include="debug.c" />
     <ClCompile Include="heap.c" />
     <ClCompile Include="main.c" />
+    <ClCompile Include="test.c" />
     <ClCompile Include="wm.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\lib\tlsf\tlsf.h" />
     <ClInclude Include="debug.h" />
     <ClInclude Include="heap.h" />
+    <ClInclude Include="test.h" />
     <ClInclude Include="wm.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

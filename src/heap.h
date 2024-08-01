@@ -1,6 +1,8 @@
 #ifndef __HEAP_H__
 #define __HEAP_H__
 
+#include <stdlib.h>
+
 typedef struct heap_t heap_t;
 
 // TLSF includes constant time allocation and deallocation, low memory overhaul and low fragmentation'
@@ -13,6 +15,7 @@ typedef struct heap_t heap_t;
 heap_t* heapCreate(size_t grow_increment);
 
 // Destroy a previously created heap.
+// - For each object in the heap, check if there are any leaks and report them to the user as a callstack.
 void heapDestroy(heap_t* heap);
 
 // Allocate memory from a heap.

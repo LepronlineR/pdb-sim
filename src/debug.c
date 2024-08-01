@@ -1,7 +1,6 @@
 #include "debug.h"
 
-// set to default (k_print_info) 1 << 0
-static uint32_t debug_mask = 0x0000001;
+static uint32_t debug_mask = 0xFFFFFFFF;
 
 static LONG debugExceptionHandler(LPEXCEPTION_POINTERS pointer) {
 
@@ -31,9 +30,27 @@ static LONG debugExceptionHandler(LPEXCEPTION_POINTERS pointer) {
 		CloseHandle(file);
 	}
 
+	// Create a callstack
+	debugBacktraceManually();
+
 	return EXCEPTION_EXECUTE_HANDLER;
 }
 
+void debugPrintConsole(const char* format, ...) {
+	char buffer[256] = { 0 };
+	va_list args;
+	va_start(args, format);
+	OutputDebugStringA(buffer);
+	va_end(args);
+
+	OutputDebugStringA(buffer);
+
+	DWORD bytes = (DWORD) strlen(buffer);
+	DWORD charsWritten = 0;
+	DWORD written = 0;
+	HANDLE console = GetStdHandle(STD_OUTPUT_HANDLE);
+	WriteConsoleA(console, buffer, bytes, &charsWritten, NULL);
+}
 
 void debugInstallExceptionHandler() {
 	AddVectoredExceptionHandler(TRUE, debugExceptionHandler);
@@ -47,23 +64,74 @@ void debugPrint(uint32_t type, _Printf_format_string_ const char* format, ...) {
 	if (debug_mask & type == 0)
 		return;
 
-	va_list args;
-	va_start(args, format);
-	char buffer[256] = { 0 };
-	vsnprintf(buffer, 256, format, args);
-	va_end(args);
+	debugPrintConsole(format);
 
-	OutputDebugStringA(buffer);
-
-	DWORD w = 0;
-	HANDLE handle = GetStdHandle(STD_OUTPUT_HANDLE);
-	WriteConsoleA(handle, buffer, (DWORD)strlen(buffer), &w, NULL);
+	if (type == DEBUG_PRINT_ERROR) // enable backtrace for all errors
+		debugBacktraceManually();
 }
 
-void debugBacktrace(size_t mem_size, USHORT frames, char** backtrace) {
-	debugPrint(DEBUG_PRINT_WARNING,
-		"Memory Leak: (size: %zu):\n", mem_size);
-	for (int x = 0; x < frames; x++) {
-		debugPrint(DEBUG_PRINT_WARNING, "[%d] %s", x, backtrace[x]);
+void debugBacktraceManually(){
+	SYMBOL_INFO* symbol = (SYMBOL_INFO*)calloc(1, sizeof(SYMBOL_INFO) + 256 * sizeof(TCHAR));
+	symbol->MaxNameLen = 256;
+	symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+
+	void* stack[32];
+	HANDLE h_proc = GetCurrentProcess();
+	SymInitialize(h_proc, NULL, TRUE);
+	unsigned short frames = debugBacktrace(stack, 32);
+
+	HANDLE console = GetStdHandle(STD_OUTPUT_HANDLE);
+
+	debugPrintConsole(&console, "\n---------------------------- CALL STACK -------------------------------\n");
+	for (USHORT x = 1; x < frames; x++) {
+		DWORD64 address = (DWORD64)(stack[x]);
+		DWORD displacement = { 0 };
+		IMAGEHLP_LINE64 line = { 0 };
+		line.SizeOfStruct = sizeof(IMAGEHLP_LINE64);
+
+		if (SymFromAddr(h_proc, (DWORD64)(stack[x]), 0, &symbol)
+			&& SymGetLineFromAddr64(h_proc, (DWORD64)(stack[x]), &displacement, &line)) {
+			debugPrintConsole(&console, "[%i] %s - 0x%0llX (%s:%lu)\n", frames - x - 1, symbol->Name, symbol->Address, line.FileName, line.LineNumber);
+		} else {
+			debugPrintConsole(&console, "%i: [Error: %lu] - 0x%0llX\n", frames - x - 1, GetLastError(), address);
+		}
 	}
+	debugPrintConsole(&console, "-----------------------------------------------------------------------\n");
+
+	SymCleanup(h_proc);
+	free(symbol);
+}
+
+void debugBacktraceLeakedMemory(void** stack, int frames) {
+	SYMBOL_INFO* symbol = (SYMBOL_INFO*)calloc(1, sizeof(SYMBOL_INFO) + 256 * sizeof(TCHAR));
+	symbol->MaxNameLen = 256;
+	symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
+	HANDLE h_proc = GetCurrentProcess();
+	SymInitialize(h_proc, NULL, TRUE);
+
+	HANDLE console = GetStdHandle(STD_OUTPUT_HANDLE);
+
+	debugPrintConsole(&console, "\n------------------------ MEMORY HAS LEAKED ---------------------------\n");
+	for (USHORT x = 1; x < frames; x++) {
+		DWORD64 address = (DWORD64)(stack[x]);
+		DWORD displacement = { 0 };
+		IMAGEHLP_LINE64 line = { 0 };
+		line.SizeOfStruct = sizeof(IMAGEHLP_LINE64);
+
+		if (SymFromAddr(h_proc, (DWORD64)(stack[x]), 0, &symbol)
+			&& SymGetLineFromAddr64(h_proc, (DWORD64)(stack[x]), &displacement, &line)) {
+			debugPrintConsole(&console, "[%i] %s - 0x%0llX (%s:%lu)\n", frames - x - 1, symbol->Name, symbol->Address, line.FileName, line.LineNumber);
+		}
+		else {
+			debugPrintConsole(&console, "%i: [Error: %lu] - 0x%0llX\n", frames - x - 1, GetLastError(), address);
+		}
+	}
+	debugPrintConsole(&console, "-----------------------------------------------------------------------\n");
+
+	SymCleanup(h_proc);
+	free(symbol);
+}
+
+int debugBacktrace(void** stack, int stack_capacity) {
+	return CaptureStackBackTrace(1, stack_capacity, stack, NULL);
 }

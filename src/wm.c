@@ -31,6 +31,16 @@ key_map_k[] =
 	{.virtual_key = VK_RIGHT, .ga_key = k_key_arr_right, },
 	{.virtual_key = VK_UP, .ga_key = k_key_arr_up, },
 	{.virtual_key = VK_DOWN, .ga_key = k_key_arr_down, },
+	{.virtual_key = 0x30, .ga_key = k_key_zero, },
+	{.virtual_key = 0x31, .ga_key = k_key_one, },
+	{.virtual_key = 0x32, .ga_key = k_key_two, },
+	{.virtual_key = 0x33, .ga_key = k_key_three, },
+	{.virtual_key = 0x34, .ga_key = k_key_four, },
+	{.virtual_key = 0x35, .ga_key = k_key_five, },
+	{.virtual_key = 0x36, .ga_key = k_key_six, },
+	{.virtual_key = 0x37, .ga_key = k_key_seven, },
+	{.virtual_key = 0x38, .ga_key = k_key_eight, },
+	{.virtual_key = 0x39, .ga_key = k_key_nine, }
 };
 
 // https://learn.microsoft.com/en-us/windows/win32/learnwin32/your-first-windows-program

@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <stdint.h>
+#include <stdbool.h>
 
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
@@ -28,6 +29,11 @@ typedef enum debug_print_t {
 // RETURN:
 static LONG debugExceptionHandler(LPEXCEPTION_POINTERS pointer);
 
+
+// Prints the format to the console
+//
+void debugPrintConsole(const char* format, ...);
+
 // Install unhandled exception handler. This will log any errors and release a memory dump.
 // 
 void debugInstallExceptionHandler();
@@ -43,6 +49,14 @@ void debugPrint(uint32_t type, _Printf_format_string_ const char* format, ...);
 // Given the backtrace of the stack with the total stack frame and size of memory, we debug
 // the memory leaks for that particular trace
 //
-void debugBacktrace(size_t mem_size, USHORT frames, char** backtrace);
+// RETURN: the total frames for the backtrace
+int debugBacktrace(void** stack, int stack_capacity);
 
+// Call and print the backtrace manually
+//
+void debugBacktraceManually();
+
+// Call and print the backtrace of the memory that has leaked
+//
+void debugBacktraceLeakedMemory(void** stack, int frames);
 #endif
