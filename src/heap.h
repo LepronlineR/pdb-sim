@@ -12,6 +12,8 @@ typedef struct heap_t heap_t;
 // Creates a new memory heap.
 // The grow increment is the default size with which the heap grows.
 // Should be a multiple of OS page size.
+//
+// RETURN: the new memory heap
 heap_t* heapCreate(size_t grow_increment);
 
 // Destroy a previously created heap.
@@ -19,6 +21,8 @@ heap_t* heapCreate(size_t grow_increment);
 void heapDestroy(heap_t* heap);
 
 // Allocate memory from a heap.
+//
+// RETURN: the address of the new allocated memory
 void* heapAlloc(heap_t* heap, size_t size, size_t alignment);
 
 // Free memory previously allocated from a heap.
