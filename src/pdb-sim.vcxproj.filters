@@ -81,6 +81,12 @@
     <ClCompile Include="heap.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="timer.c">
+      <Filter>Source Files\sys</Filter>
+    </ClCompile>
+    <ClCompile Include="timer_object.c">
+      <Filter>Source Files\sys</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="heap.h">
@@ -124,6 +130,12 @@
     </ClInclude>
     <ClInclude Include="hashtable.h">
       <Filter>Header Files\ds</Filter>
+    </ClInclude>
+    <ClInclude Include="timer.h">
+      <Filter>Header Files\sys</Filter>
+    </ClInclude>
+    <ClInclude Include="timer_object.h">
+      <Filter>Header Files\sys</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>
