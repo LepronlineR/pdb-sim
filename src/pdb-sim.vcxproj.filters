@@ -13,87 +13,117 @@
       <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
       <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
     </Filter>
+    <Filter Include="Source Files\lib">
+      <UniqueIdentifier>{a1ba2dcf-3909-4a6e-890a-d4675ef2124c}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\lib">
+      <UniqueIdentifier>{fbc6ca0e-86e0-4961-b258-22537adbffd4}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\threading">
+      <UniqueIdentifier>{3ed7c146-92ac-4d4d-aced-d15307862848}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\threading">
+      <UniqueIdentifier>{e8996cc3-384a-405f-9a37-93fa9a5ce51e}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\sys">
+      <UniqueIdentifier>{b7349428-07a7-4f18-b327-1aac663268bb}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\sys">
+      <UniqueIdentifier>{065beef8-5f2e-4a63-930d-7069b61b6f21}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\ds">
+      <UniqueIdentifier>{e2edf9bd-4943-4aea-a503-b7ecc9b62301}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\ds">
+      <UniqueIdentifier>{0a59f290-43eb-4dc3-b08f-c2caef685ae8}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="wm.c">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="main.c">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="heap.c">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="..\lib\tlsf\tlsf.c">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="debug.c">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="test.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="atomic.c">
-      <Filter>Source Files</Filter>
+    <ClCompile Include="..\lib\lz4\lz4.c">
+      <Filter>Source Files\lib</Filter>
     </ClCompile>
-    <ClCompile Include="semaphore.c">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="mutex.c">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="event.c">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="deque.c">
-      <Filter>Source Files</Filter>
+    <ClCompile Include="..\lib\tlsf\tlsf.c">
+      <Filter>Source Files\lib</Filter>
     </ClCompile>
     <ClCompile Include="thread.c">
-      <Filter>Source Files</Filter>
+      <Filter>Source Files\threading</Filter>
+    </ClCompile>
+    <ClCompile Include="mutex.c">
+      <Filter>Source Files\threading</Filter>
+    </ClCompile>
+    <ClCompile Include="atomic.c">
+      <Filter>Source Files\threading</Filter>
+    </ClCompile>
+    <ClCompile Include="event.c">
+      <Filter>Source Files\threading</Filter>
+    </ClCompile>
+    <ClCompile Include="semaphore.c">
+      <Filter>Source Files\threading</Filter>
+    </ClCompile>
+    <ClCompile Include="debug.c">
+      <Filter>Source Files\sys</Filter>
+    </ClCompile>
+    <ClCompile Include="wm.c">
+      <Filter>Source Files\sys</Filter>
     </ClCompile>
     <ClCompile Include="fs.c">
+      <Filter>Source Files\sys</Filter>
+    </ClCompile>
+    <ClCompile Include="deque.c">
+      <Filter>Source Files\ds</Filter>
+    </ClCompile>
+    <ClCompile Include="heap.c">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="wm.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="heap.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="..\lib\tlsf\tlsf.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="debug.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="test.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="atomic.h">
-      <Filter>Header Files</Filter>
+    <ClInclude Include="..\lib\lz4\lz4.h">
+      <Filter>Header Files\lib</Filter>
     </ClInclude>
-    <ClInclude Include="semaphore.h">
-      <Filter>Header Files</Filter>
+    <ClInclude Include="..\lib\tlsf\tlsf.h">
+      <Filter>Header Files\lib</Filter>
+    </ClInclude>
+    <ClInclude Include="atomic.h">
+      <Filter>Header Files\threading</Filter>
     </ClInclude>
     <ClInclude Include="mutex.h">
-      <Filter>Header Files</Filter>
+      <Filter>Header Files\threading</Filter>
     </ClInclude>
-    <ClInclude Include="event.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="deque.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="hashtable.h">
-      <Filter>Header Files</Filter>
+    <ClInclude Include="semaphore.h">
+      <Filter>Header Files\threading</Filter>
     </ClInclude>
     <ClInclude Include="thread.h">
-      <Filter>Header Files</Filter>
+      <Filter>Header Files\threading</Filter>
+    </ClInclude>
+    <ClInclude Include="event.h">
+      <Filter>Header Files\threading</Filter>
+    </ClInclude>
+    <ClInclude Include="debug.h">
+      <Filter>Header Files\sys</Filter>
+    </ClInclude>
+    <ClInclude Include="wm.h">
+      <Filter>Header Files\sys</Filter>
     </ClInclude>
     <ClInclude Include="fs.h">
-      <Filter>Header Files</Filter>
+      <Filter>Header Files\sys</Filter>
+    </ClInclude>
+    <ClInclude Include="deque.h">
+      <Filter>Header Files\ds</Filter>
+    </ClInclude>
+    <ClInclude Include="hashtable.h">
+      <Filter>Header Files\ds</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

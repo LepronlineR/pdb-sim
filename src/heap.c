@@ -11,8 +11,8 @@
 
 typedef struct object_t {
 	struct object_t* next;
-	bool marked;
-	size_t size;
+	// bool marked;
+	// size_t size;
 	void* backtrace[32];
 	int backtrace_frames;
 	void* data;
@@ -63,9 +63,6 @@ void* heapAlloc(heap_t* heap, size_t size, size_t alignment) {
 		
 		address = tlsf_memalign(heap->tlsf, alignment, size);
 
-	} else { // heap did not allocate correctly...
-		debugPrint(DEBUG_PRINT_ERROR, "Heap Allocation Error: unable to allocate enough memory.\n");
-		return NULL;
 	}
 
 	mutexUnlock(heap->mutex);

@@ -5,6 +5,8 @@
 
 #include "thread.h"
 
+void testReadWriteAndCompression();
+
 void testLeakedHeapAllocation();
 
 typedef struct thread_data_t thread_data_t;
@@ -15,7 +17,6 @@ static int atomicReadWriteTestFunc(void* user);
 static int atomicIncrementTestFunc(void* user);
 static int mutexTestFunc(void* user);
 static void runThreadBenchmark(int (*function)(void*), const char* name);
-
 void testThreading();
 
 #endif

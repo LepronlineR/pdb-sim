@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 
+#define threadDestroy(thread) threadRun(thread);
+
 /* THREADS FOR MULTITHREADING
 */
 

@@ -7,6 +7,7 @@
 #include "semaphore.h"
 #include "thread.h"
 #include "heap.h"
+#include "fs.h"
 
 #include <assert.h>
 #include <stdbool.h>
@@ -14,8 +15,9 @@
 #include <windows.h>
 #include <mmsystem.h>
 #include <stdio.h>
-
 #pragma comment(lib, "winmm.lib")
+#include <Shlwapi.h> // Include for PathFileExists
+#pragma comment(lib, "Shlwapi.lib")
 
 #define LARGENUMBER 1000000
 
@@ -23,6 +25,44 @@
 //					FILE I/O TEST
 // ================================================
 
+void testReadWriteAndCompression(heap_t* heap, fs_t* fs) {
+
+	// =============== READ FILE (HARRY POTTER BOOK 1) ================
+
+	fs_work_t* read_file_work = fsRead(fs, "assets\\fiotest.test", heap, true, false);
+	fsWorkBlock(read_file_work);
+
+	char* harry_potter = fsWorkGetBuffer(read_file_work);
+	const size_t harry_potter_len = strlen(harry_potter);
+
+
+	// =================== COMPRESS AND WRITE FILE ====================
+
+	const char* write_data = harry_potter;
+	fs_work_t* write_work = fsWrite(fs, "assets\\compressed.bar", write_data, harry_potter_len, true);
+	fsWorkBlock(write_work);
+
+	assert(fsWorkGetErrorCode(write_work) == 0);
+	assert(fsWorkGetSize(write_work) == harry_potter_len);
+
+	// ===================== READ COMPRESSED FILE =====================
+
+	fs_work_t* read_work = fsRead(fs, "assets\\compressed.bar", heap, true, true);
+	fsWorkBlock(read_work);
+
+	// ===================== COMPARE TO PREV DATA =====================
+
+	char* read_data = fsWorkGetBuffer(read_work);
+	assert(read_data && strcmp(read_data, harry_potter) == 0);
+	assert(fsWorkGetErrorCode(read_work) == 0);
+	assert(fsWorkGetSize(read_work) == harry_potter_len);
+
+	fsWorkDestroy(read_file_work);
+	fsWorkDestroy(read_work);
+	fsWorkDestroy(write_work);
+
+	debugPrint(DEBUG_PRINT_INFO, "File I/O Test Success!\n");
+}
 
 // ================================================
 //					ALLOCATION TEST

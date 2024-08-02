@@ -76,7 +76,7 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>F:\pdb-sim\lib;F:\pdb-sim\lib\tlsf;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>F:\pdb-sim\lib;F:\pdb-sim\lib\lz4;F:\pdb-sim\lib\tlsf;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -106,7 +106,7 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>F:\pdb-sim\lib;F:\pdb-sim\lib\tlsf;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>F:\pdb-sim\lib;F:\pdb-sim\lib\lz4;F:\pdb-sim\lib\tlsf;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -131,6 +131,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="..\lib\lz4\lz4.c" />
     <ClCompile Include="..\lib\tlsf\tlsf.c" />
     <ClCompile Include="atomic.c" />
     <ClCompile Include="debug.c" />
@@ -146,6 +147,7 @@
     <ClCompile Include="wm.c" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="..\lib\lz4\lz4.h" />
     <ClInclude Include="..\lib\tlsf\tlsf.h" />
     <ClInclude Include="atomic.h" />
     <ClInclude Include="debug.h" />

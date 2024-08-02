@@ -34,7 +34,7 @@ void dequeDestroy(deque_t* deque) {
 
 void dequePushFront(deque_t* deque, void* item) {
 	semaphoreGet(deque->free);
-	int new_head_idx = atomicInc(&deque->head_idx) % deque->length;
+	int new_head_idx = atomicDec(&deque->head_idx) % deque->length;
 	deque->items[new_head_idx] = item;
 	semaphoreRelease(deque->used);
 }
@@ -49,7 +49,7 @@ void* dequePopFront(deque_t* deque) {
 
 void dequePushBack(deque_t* deque, void* item) {
 	semaphoreGet(deque->free);
-	int new_tail_idx = atomicDec(&deque->tail_idx) % deque->length;
+	int new_tail_idx = atomicInc(&deque->tail_idx) % deque->length;
 	deque->items[new_tail_idx] = item;
 	semaphoreRelease(deque->used);
 }
