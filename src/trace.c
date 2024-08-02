@@ -112,10 +112,11 @@ void traceCaptureStop(trace_t* trace) {
 
 	// write to JSON format for each saved trace event in the trace event list starting from head
 	wchar_t w_path[1024] = { 0 };
-	if (MultiByteToWideChar(CP_UTF8, 0, trace->path, -1, w_path, sizeof(w_path)) <= 0) {
+	if (MultiByteToWideChar(CP_UTF8, 0, trace->path, -1, w_path, 0) <= 0) {
 		debugPrint(DEBUG_PRINT_ERROR, "In 'trace_capture_stop' creating wide_path is invalid.\n");
 		return;
 	}
+
 	HANDLE handle = CreateFile(w_path, GENERIC_WRITE, FILE_SHARE_WRITE, NULL,
 		CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
 

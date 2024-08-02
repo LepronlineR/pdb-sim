@@ -72,6 +72,10 @@ void debugPrint(uint32_t type, _Printf_format_string_ const char* format, ...) {
 
 void debugBacktraceManually(){
 	SYMBOL_INFO* symbol = (SYMBOL_INFO*)calloc(1, sizeof(SYMBOL_INFO) + 256 * sizeof(TCHAR));
+	if (symbol == NULL) {
+		debugPrintConsole(DEBUG_PRINT_ERROR, "Symbol not initialized for debug backtrace.\n");
+		return;
+	}
 	symbol->MaxNameLen = 256;
 	symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
 
@@ -102,29 +106,30 @@ void debugBacktraceManually(){
 
 void debugBacktraceLeakedMemory(void** stack, int frames) {
 	SYMBOL_INFO* symbol = (SYMBOL_INFO*)calloc(1, sizeof(SYMBOL_INFO) + 256 * sizeof(TCHAR));
+	if (symbol == NULL) {
+		debugPrintConsole(DEBUG_PRINT_ERROR, "Symbol not initialized for debug backtrace.\n");
+		return;
+	}
 	symbol->MaxNameLen = 256;
 	symbol->SizeOfStruct = sizeof(SYMBOL_INFO);
 	HANDLE h_proc = GetCurrentProcess();
 	SymInitialize(h_proc, NULL, TRUE);
 
-	HANDLE console = GetStdHandle(STD_OUTPUT_HANDLE);
-
-	debugPrintConsole(&console, "\n------------------------ MEMORY HAS LEAKED ---------------------------\n");
+	debugPrintConsole("\n------------------------ MEMORY HAS LEAKED ---------------------------\n");
 	for (USHORT x = 1; x < frames; x++) {
 		DWORD64 address = (DWORD64)(stack[x]);
 		DWORD displacement = { 0 };
 		IMAGEHLP_LINE64 line = { 0 };
 		line.SizeOfStruct = sizeof(IMAGEHLP_LINE64);
 
-		if (SymFromAddr(h_proc, (DWORD64)(stack[x]), 0, &symbol)
-			&& SymGetLineFromAddr64(h_proc, (DWORD64)(stack[x]), &displacement, &line)) {
-			debugPrintConsole(&console, "[%i] %s - 0x%0llX (%s:%lu)\n", frames - x - 1, symbol->Name, symbol->Address, line.FileName, line.LineNumber);
-		}
-		else {
-			debugPrintConsole(&console, "%i: [Error: %lu] - 0x%0llX\n", frames - x - 1, GetLastError(), address);
+		if (SymFromAddr(h_proc, address, 0, &symbol)
+			&& SymGetLineFromAddr64(h_proc, address, &displacement, &line)) {
+			debugPrintConsole("[%i] %s - 0x%0llX (%s:%lu)\n", frames - x - 1, symbol->Name, symbol->Address, line.FileName, line.LineNumber);
+		} else {
+			debugPrintConsole("%i: [Error: %lu] - 0x%0llX\n", frames - x - 1, GetLastError(), address);
 		}
 	}
-	debugPrintConsole(&console, "-----------------------------------------------------------------------\n");
+	debugPrintConsole("-----------------------------------------------------------------------\n");
 
 	SymCleanup(h_proc);
 	free(symbol);

@@ -77,6 +77,7 @@
       <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <AdditionalIncludeDirectories>F:\pdb-sim\lib;F:\pdb-sim\lib\lz4;F:\pdb-sim\lib\tlsf;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <LanguageStandard_C>Default</LanguageStandard_C>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -107,6 +108,7 @@
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <AdditionalIncludeDirectories>F:\pdb-sim\lib;F:\pdb-sim\lib\lz4;F:\pdb-sim\lib\tlsf;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <LanguageStandard_C>Default</LanguageStandard_C>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -138,6 +140,7 @@
     <ClCompile Include="deque.c" />
     <ClCompile Include="event.c" />
     <ClCompile Include="fs.c" />
+    <ClCompile Include="hashtable.c" />
     <ClCompile Include="heap.c" />
     <ClCompile Include="main.c" />
     <ClCompile Include="mutex.c" />
@@ -159,6 +162,7 @@
     <ClInclude Include="fs.h" />
     <ClInclude Include="hashtable.h" />
     <ClInclude Include="heap.h" />
+    <ClInclude Include="moremath.h" />
     <ClInclude Include="mutex.h" />
     <ClInclude Include="semaphore.h" />
     <ClInclude Include="test.h" />
@@ -166,6 +170,7 @@
     <ClInclude Include="timer.h" />
     <ClInclude Include="timer_object.h" />
     <ClInclude Include="trace.h" />
+    <ClInclude Include="vec3f.h" />
     <ClInclude Include="wm.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

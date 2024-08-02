@@ -94,7 +94,7 @@ fs_work_t* fsWrite(fs_t* fs, const char* path, const void* buffer, size_t size, 
 	strcpy_s(work->path, sizeof(work->path), path);
 	work->buffer = (char*)buffer;
 	work->allocated_buffer = true;
-	work->size = size;
+	work->size = (int) size;
 	work->compressed_size = 0;
 	work->done = eventCreate();
 	work->result = 0;
@@ -148,8 +148,7 @@ void fsWorkDestroy(fs_work_t* work) {
 
 static void fileRead(fs_t* fs, fs_work_t* work) {
 	wchar_t w_path[1024] = { 0 };
-	if (MultiByteToWideChar(CP_UTF8, 0, work->path,
-		-1, w_path, sizeof(w_path)) <= 0) {
+	if (MultiByteToWideChar(CP_UTF8, 0, work->path, -1, w_path, 0) <= 0) {
 		work->result = -1;
 		return;
 	}
@@ -195,8 +194,7 @@ static void fileRead(fs_t* fs, fs_work_t* work) {
 
 static void fileWrite(fs_work_t* work) {
 	wchar_t w_path[1024] = { 0 };
-	if (MultiByteToWideChar(CP_UTF8, 0, work->path,
-		-1, w_path, sizeof(w_path)) <= 0) {
+	if (MultiByteToWideChar(CP_UTF8, 0, work->path, -1, w_path, 0) <= 0) {
 		work->result = -1;
 		return;
 	}
@@ -231,7 +229,7 @@ static void fileWrite(fs_work_t* work) {
 static void fileDecompress(fs_work_t* work) {
 	int compressed_size = 0;
 	memcpy(&compressed_size, work->buffer, sizeof(int));
-	int dst_buffer_size = work->size;
+	int dst_buffer_size = (int) work->size;
 
 	char* dst_buffer = heapAlloc(work->heap, dst_buffer_size, 0);
 	int decompressed_size = LZ4_decompress_safe((char*)work->buffer + sizeof(int), dst_buffer, compressed_size, dst_buffer_size);

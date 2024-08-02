@@ -9,20 +9,20 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
-typedef struct object_t {
-	struct object_t* next;
-	// bool marked;
-	// size_t size;
+typedef struct heap_obj_t {
+	struct heap_obj_t* next;
+	bool marked;
+	size_t size;
 	void* backtrace[32];
 	int backtrace_frames;
 	void* data;
 	pool_t pool;
-} object_t;
+} heap_obj_t;
 
 typedef struct heap_t {
 	tlsf_t tlsf;
 	size_t grow_increment;
-	object_t* object;
+	heap_obj_t* object;
 	mutex_t* mutex;
 } heap_t;
 
@@ -49,8 +49,8 @@ void* heapAlloc(heap_t* heap, size_t size, size_t alignment) {
 	
 	void* address = tlsf_memalign(heap->tlsf, alignment, size);
 	if (!address) {
-		size_t object_size = __max(heap->grow_increment, size * 2) + sizeof(object_t);
-		object_t* object = VirtualAlloc(NULL, object_size + tlsf_pool_overhead(),
+		size_t object_size = __max(heap->grow_increment, size * 2) + sizeof(heap_obj_t);
+		heap_obj_t* object = VirtualAlloc(NULL, object_size + tlsf_pool_overhead(),
 			MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
 		if (!object) { // cannot allocate enough for the object 
 			debugPrint(DEBUG_PRINT_ERROR, "Heap Allocation Error: unable to allocate enough memory for the object.\n");
@@ -79,8 +79,8 @@ void heapFree(heap_t* heap, void* address) {
 void heapDestroy(heap_t* heap) {
 	tlsf_destroy(heap->tlsf);
 
-	object_t* object = heap->object;
-	object_t* next;
+	heap_obj_t* object = heap->object;
+	heap_obj_t* next;
 	while (object) {
 		// check if the object has been freed by tlsf, otherwise return a backtrace of the leaked mem
 		// 
