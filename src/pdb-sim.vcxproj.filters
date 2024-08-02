@@ -87,6 +87,9 @@
     <ClCompile Include="timer_object.c">
       <Filter>Source Files\sys</Filter>
     </ClCompile>
+    <ClCompile Include="trace.c">
+      <Filter>Source Files\sys</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="heap.h">
@@ -135,6 +138,9 @@
       <Filter>Header Files\sys</Filter>
     </ClInclude>
     <ClInclude Include="timer_object.h">
+      <Filter>Header Files\sys</Filter>
+    </ClInclude>
+    <ClInclude Include="trace.h">
       <Filter>Header Files\sys</Filter>
     </ClInclude>
   </ItemGroup>

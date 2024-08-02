@@ -25,7 +25,64 @@
 //					TRACING TEST
 // ================================================
 
+void testTraceSlowerFunction(trace_t* trace) {
+	traceDurationPush(trace, "slower_function");
+	threadSleep(500);
+	traceDurationPop(trace);
+}
 
+void testTraceSlowFunction(trace_t* trace) {
+	traceDurationPush(trace, "slow_function");
+	threadSleep(200);
+	testTraceSlowerFunction(trace);
+	traceDurationPop(trace);
+}
+
+int testTraceFunc(void* data) {
+	trace_t* trace = data;
+	testTraceSlowFunction(trace);
+	return 0;
+}
+
+void testTrace() {
+	heap_t* heap = heapCreate(4096);
+
+	// Create the tracing system with at least space for 100 *captured* events.
+	// Each call to trace_duration_push is an event.
+	// Each call to trace_duration_pop is an event.
+	// Before trace_capture_start is called, and after trace_capture_stop is called,
+	// duration events should not be generated.
+	trace_t* trace = traceCreate(heap, 100);
+
+	// Capturing has *not* started so these calls can safely be ignored.
+	traceDurationPush(trace, "should be ignored");
+	traceDurationPop(trace);
+
+	// Start capturing events.
+	// Eventually we will want to write events to a file -- "trace.json".
+	// However we should *not* write to the file for each call to trace_duration_push or
+	// trace_duration_pop. That would be much too slow. Instead, events should be buffered
+	// (up to event_capacity) before writing to a file. For purposes of this homework,
+	// it is entirely fine if you only capture the first event_capacity count events and
+	// ignore any additional events.
+	traceCaptureStart(trace, "trace.json");
+
+	// Create a thread that will push/pop duration events.
+	thread_t* thread = threadCreate(testTraceFunc, trace);
+
+	// Call a function that will push/pop duration events.
+	testTraceSlowFunction(trace);
+
+	// Wait for thread to finish.
+	threadDestroy(thread);
+
+	// Finish capturing. Write the trace.json file in Chrome tracing format.
+	traceCaptureStop(trace);
+
+	traceDestroy(trace);
+
+	heapDestroy(heap);
+}
 
 // ================================================
 //					FILE I/O TEST

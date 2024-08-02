@@ -8,8 +8,8 @@ static double s_us_per_tick = 0.001;
 static double s_ms_per_tick = 0.000001;
 
 void timerStartup(){
-	s_ticks_start = timer_get_ticks();
-	uint64_t ticks_per_second = timer_get_ticks_per_second();
+	s_ticks_start = timerGetTicks();
+	uint64_t ticks_per_second = timerGetTicksPerSecond();
 	s_us_per_tick = 1000000.0 / ticks_per_second;
 	s_ms_per_tick = 1000.0 / ticks_per_second;
 }

@@ -11,6 +11,7 @@ typedef struct deque_t {
 	int length;
 	int head_idx;
 	int tail_idx;
+	int cur_size;
 } deque_t;
 
 deque_t* dequeCreate(heap_t* heap, int length) {
@@ -22,6 +23,7 @@ deque_t* dequeCreate(heap_t* heap, int length) {
 	deque->length = length;
 	deque->head_idx = 0;
 	deque->tail_idx = 0;
+	deque->cur_size = 0;
 	return deque;
 }
 
@@ -36,6 +38,7 @@ void dequePushFront(deque_t* deque, void* item) {
 	semaphoreGet(deque->free);
 	int new_head_idx = atomicDec(&deque->head_idx) % deque->length;
 	deque->items[new_head_idx] = item;
+	deque->cur_size++;
 	semaphoreRelease(deque->used);
 }
 
@@ -43,6 +46,7 @@ void* dequePopFront(deque_t* deque) {
 	semaphoreGet(deque->used);
 	int new_head_idx = atomicInc(&deque->head_idx) % deque->length;
 	void* item = deque->items[new_head_idx];
+	deque->cur_size--;
 	semaphoreRelease(deque->free);
 	return item;
 }
@@ -51,6 +55,7 @@ void dequePushBack(deque_t* deque, void* item) {
 	semaphoreGet(deque->free);
 	int new_tail_idx = atomicInc(&deque->tail_idx) % deque->length;
 	deque->items[new_tail_idx] = item;
+	deque->cur_size++;
 	semaphoreRelease(deque->used);
 }
 
@@ -58,6 +63,15 @@ void* dequePopBack(deque_t* deque) {
 	semaphoreGet(deque->used);
 	int new_tail_idx = atomicDec(&deque->tail_idx) % deque->length;
 	void* item = deque->items[new_tail_idx];
+	deque->cur_size--;
 	semaphoreRelease(deque->free);
 	return item;
+}
+
+void* dequePeekFront(deque_t* deque) {
+	return deque->items[deque->head_idx];
+}
+
+int dequeGetCurrentSize(deque_t* deque) {
+	return deque->cur_size;
 }

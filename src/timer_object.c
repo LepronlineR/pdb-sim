@@ -19,7 +19,7 @@ timer_object_t* timerObjectCreate(heap_t* heap, timer_object_t* parent){
 	t->current_ticks = 0;
 	t->delta_ticks = 0;
 	t->parent = parent;
-	t->bias_ticks = parent ? parent->current_ticks : timer_get_ticks();
+	t->bias_ticks = parent ? parent->current_ticks : timerGetTicks();
 	t->scale = 1.0;
 	t->paused = false;
 	return t;

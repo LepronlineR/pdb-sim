@@ -4,8 +4,16 @@
 // typedef struct test_t test_t; use this for benchmarking + assertions + testing suites later
 
 #include "thread.h"
+#include "heap.h"
+#include "fs.h"
+#include "trace.h"
 
-void testReadWriteAndCompression();
+void testTraceSlowerFunction(trace_t* trace);
+void testTraceSlowFunction(trace_t* trace);
+int testTraceFunc(void* data);
+void testTrace();
+
+void testReadWriteAndCompression(heap_t* heap, fs_t* fs);
 
 void testLeakedHeapAllocation();
 

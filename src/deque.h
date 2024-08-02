@@ -40,4 +40,12 @@ void dequePushBack(deque_t* deque, void* item);
 // RETURN: item that has been popped
 void* dequePopBack(deque_t* deque);
 
+
+// Peek at the front instead of popping
+//
+// RETURN: item to peek at
+void* dequePeekFront(deque_t* deque);
+
+// Get current size of the queue
+int dequeGetCurrentSize(deque_t* deque);
 #endif

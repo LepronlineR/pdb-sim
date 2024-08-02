@@ -1,0 +1,12 @@
+{
+	"displayTimeUnit": "ns", "traceEvents": [
+		{"name":"slow_function","ph":"B","pid":21692,"tid":"13960","ts":"1474063"},
+		{"name":"slow_function","ph":"B","pid":21692,"tid":"14384","ts":"1474063"},
+		{"name":"slower_function","ph":"B","pid":21692,"tid":"13960","ts":"1474065"},
+		{"name":"slower_function","ph":"B","pid":21692,"tid":"14384","ts":"1474065"},
+		{"name":"slow_function","ph":"E","pid":21692,"tid":"14384","ts":"1474070"},
+		{"name":"slow_function","ph":"E","pid":21692,"tid":"13960","ts":"1474070"},
+		{"name":"slower_function","ph":"E","pid":21692,"tid":"14384","ts":"1474070"},
+		{"name":"slower_function","ph":"E","pid":21692,"tid":"13960","ts":"1474070"}
+	]
+}
