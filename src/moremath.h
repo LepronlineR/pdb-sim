@@ -8,7 +8,7 @@
 
 // Determines if two scalar values are nearly equal
 // given the limitations of floating point accuracy.
-__forceinline bool almost_equalf(float a, float b) {
+__forceinline bool almostEqualf(float a, float b) {
 	float diff = fabsf(a - b);
 	if (diff <= FLT_EPSILON * 1000.0f) {
 		return true;
@@ -27,7 +27,7 @@ __forceinline float lerpf(float start, float end, float distance) {
 
 // Given an input with a min and max number, get the wrapped index of a given input
 // i.e. Wrap(7, 0, 4) -> 3
-__forceinline int wrapi(int input, int min, int max) {
+__forceinline int wrapIdx(int input, int min, int max) {
 	if (input < min) {
 		return max - (min - input) % (max - min);
 	} else {

@@ -147,6 +147,7 @@
     <ClCompile Include="hashtable.c" />
     <ClCompile Include="heap.c" />
     <ClCompile Include="main.c" />
+    <ClCompile Include="mat4f.c" />
     <ClCompile Include="mutex.c" />
     <ClCompile Include="semaphore.c" />
     <ClCompile Include="test.c" />
@@ -166,8 +167,10 @@
     <ClInclude Include="fs.h" />
     <ClInclude Include="hashtable.h" />
     <ClInclude Include="heap.h" />
+    <ClInclude Include="mat4f.h" />
     <ClInclude Include="moremath.h" />
     <ClInclude Include="mutex.h" />
+    <ClInclude Include="quatf.h" />
     <ClInclude Include="semaphore.h" />
     <ClInclude Include="test.h" />
     <ClInclude Include="thread.h" />

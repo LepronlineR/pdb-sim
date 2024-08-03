@@ -19,9 +19,6 @@
     <Filter Include="Header Files\lib">
       <UniqueIdentifier>{fbc6ca0e-86e0-4961-b258-22537adbffd4}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Header Files\threading">
-      <UniqueIdentifier>{3ed7c146-92ac-4d4d-aced-d15307862848}</UniqueIdentifier>
-    </Filter>
     <Filter Include="Source Files\threading">
       <UniqueIdentifier>{e8996cc3-384a-405f-9a37-93fa9a5ce51e}</UniqueIdentifier>
     </Filter>
@@ -43,12 +40,18 @@
     <Filter Include="Source Files\math">
       <UniqueIdentifier>{d23ba3ef-da43-489a-ad45-4545681465d3}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Header Files\thd">
+      <UniqueIdentifier>{3ed7c146-92ac-4d4d-aced-d15307862848}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\test">
+      <UniqueIdentifier>{f386cf67-5421-4522-acd3-ad143cd04642}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\test">
+      <UniqueIdentifier>{93953d8f-42e5-4452-8c32-f0f6d5fae501}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.c">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="test.c">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="..\lib\lz4\lz4.c">
@@ -84,9 +87,6 @@
     <ClCompile Include="deque.c">
       <Filter>Source Files\ds</Filter>
     </ClCompile>
-    <ClCompile Include="heap.c">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="timer.c">
       <Filter>Source Files\sys</Filter>
     </ClCompile>
@@ -99,14 +99,17 @@
     <ClCompile Include="hashtable.c">
       <Filter>Source Files\ds</Filter>
     </ClCompile>
+    <ClCompile Include="heap.c">
+      <Filter>Source Files\sys</Filter>
+    </ClCompile>
+    <ClCompile Include="test.c">
+      <Filter>Source Files\test</Filter>
+    </ClCompile>
+    <ClCompile Include="mat4f.c">
+      <Filter>Source Files\math</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="heap.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="test.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="..\lib\lz4\lz4.h">
       <Filter>Header Files\lib</Filter>
     </ClInclude>
@@ -114,19 +117,19 @@
       <Filter>Header Files\lib</Filter>
     </ClInclude>
     <ClInclude Include="atomic.h">
-      <Filter>Header Files\threading</Filter>
+      <Filter>Header Files\thd</Filter>
     </ClInclude>
     <ClInclude Include="mutex.h">
-      <Filter>Header Files\threading</Filter>
+      <Filter>Header Files\thd</Filter>
     </ClInclude>
     <ClInclude Include="semaphore.h">
-      <Filter>Header Files\threading</Filter>
+      <Filter>Header Files\thd</Filter>
     </ClInclude>
     <ClInclude Include="thread.h">
-      <Filter>Header Files\threading</Filter>
+      <Filter>Header Files\thd</Filter>
     </ClInclude>
     <ClInclude Include="event.h">
-      <Filter>Header Files\threading</Filter>
+      <Filter>Header Files\thd</Filter>
     </ClInclude>
     <ClInclude Include="debug.h">
       <Filter>Header Files\sys</Filter>
@@ -156,6 +159,18 @@
       <Filter>Header Files\math</Filter>
     </ClInclude>
     <ClInclude Include="vec3f.h">
+      <Filter>Header Files\math</Filter>
+    </ClInclude>
+    <ClInclude Include="mat4f.h">
+      <Filter>Header Files\math</Filter>
+    </ClInclude>
+    <ClInclude Include="test.h">
+      <Filter>Header Files\test</Filter>
+    </ClInclude>
+    <ClInclude Include="heap.h">
+      <Filter>Header Files\sys</Filter>
+    </ClInclude>
+    <ClInclude Include="quatf.h">
       <Filter>Header Files\math</Filter>
     </ClInclude>
   </ItemGroup>

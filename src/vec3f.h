@@ -120,7 +120,7 @@ __forceinline float vec3fDistance(vec3f_t a, vec3f_t b) { sqrtf(vec3fDistanceSqr
 __forceinline vec3f_t vec3fNorm(vec3f_t v) {
     float m = vec3fMagnitude(v);
     // case that the magnitude is 0 --> already a unit vector
-    if (almost_equalf(m, 0.0f)) { return v; }
+    if (almostEqualf(m, 0.0f)) { return v; }
     return vec3fScale(v, 1.0f / m);
 }
 
