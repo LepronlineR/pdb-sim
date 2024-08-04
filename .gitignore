@@ -366,3 +366,4 @@ FodyWeavers.xsd
 # Testing
 *.bar
 *.test
+/lib/Vulkan
