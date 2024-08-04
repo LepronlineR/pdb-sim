@@ -146,6 +146,7 @@
     <ClCompile Include="deque.c" />
     <ClCompile Include="event.c" />
     <ClCompile Include="fs.c" />
+    <ClCompile Include="gpu.c" />
     <ClCompile Include="hashtable.c" />
     <ClCompile Include="heap.c" />
     <ClCompile Include="main.c" />
@@ -168,6 +169,7 @@
     <ClInclude Include="deque.h" />
     <ClInclude Include="event.h" />
     <ClInclude Include="fs.h" />
+    <ClInclude Include="gpu.h" />
     <ClInclude Include="hashtable.h" />
     <ClInclude Include="heap.h" />
     <ClInclude Include="mat4f.h" />

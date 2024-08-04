@@ -111,6 +111,9 @@
     <ClCompile Include="quatf.c">
       <Filter>Source Files\math</Filter>
     </ClCompile>
+    <ClCompile Include="gpu.c">
+      <Filter>Source Files\sys</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\lib\lz4\lz4.h">
@@ -175,6 +178,9 @@
     </ClInclude>
     <ClInclude Include="quatf.h">
       <Filter>Header Files\math</Filter>
+    </ClInclude>
+    <ClInclude Include="gpu.h">
+      <Filter>Header Files\sys</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>
