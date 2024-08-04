@@ -108,6 +108,9 @@
     <ClCompile Include="mat4f.c">
       <Filter>Source Files\math</Filter>
     </ClCompile>
+    <ClCompile Include="quatf.c">
+      <Filter>Source Files\math</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\lib\lz4\lz4.h">

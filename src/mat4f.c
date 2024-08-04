@@ -129,7 +129,7 @@ float mat4fDet(const mat4f_t* a) {
 // NOTE: inverse matrix is equal to the product of the 
 //		 reciprocal of the det and adj matrix
 bool mat4fInverse(const mat4f_t* a, mat4f_t* b) {
-	float s[6];
+	float s[6] = { 0 };
 	s[0] = a->mat[0][0] * a->mat[1][1] - a->mat[1][0] * a->mat[0][1];
 	s[1] = a->mat[0][0] * a->mat[1][2] - a->mat[1][0] * a->mat[0][2];
 	s[2] = a->mat[0][0] * a->mat[1][3] - a->mat[1][0] * a->mat[0][3];
@@ -137,7 +137,7 @@ bool mat4fInverse(const mat4f_t* a, mat4f_t* b) {
 	s[4] = a->mat[0][1] * a->mat[1][3] - a->mat[1][1] * a->mat[0][3];
 	s[5] = a->mat[0][2] * a->mat[1][3] - a->mat[1][2] * a->mat[0][3];
 
-	float c[6];
+	float c[6] = { 0 };
 	c[0] = a->mat[2][0] * a->mat[3][1] - a->mat[3][0] * a->mat[2][1];
 	c[1] = a->mat[2][0] * a->mat[3][2] - a->mat[3][0] * a->mat[2][2];
 	c[2] = a->mat[2][0] * a->mat[3][3] - a->mat[3][0] * a->mat[2][3];
