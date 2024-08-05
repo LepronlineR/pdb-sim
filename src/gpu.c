@@ -42,13 +42,22 @@ typedef struct gpu_t {
 	uint32_t frame_width;
 	uint32_t frame_height;
 
+	VkPipelineInputAssemblyStateCreateInfo mesh_input_asm_info[GPU_MESH_LAYOUT_COUNT];
+	VkPipelineVertexInputStateCreateInfo mesh_vtx_input_info[GPU_MESH_LAYOUT_COUNT];
+	VkIndexType mesh_vtx_size[GPU_MESH_LAYOUT_COUNT];
+	VkIndexType mesh_idx_size[GPU_MESH_LAYOUT_COUNT];
+	VkIndexType mesh_idx_type[GPU_MESH_LAYOUT_COUNT];
+
 	gpu_frame_t* frames;
 	uint32_t frame_count;
 	uint32_t frame_index;
 
-	// memory
 	heap_t* heap;
 } gpu_t;
+
+static uint32_t gpuGetMemoryTypeIndex(gpu_t* gpu, uint32_t bits, VkMemoryPropertyFlags property_flags);
+static void gpuCreateMeshLayouts(gpu_t* gpu);
+static void gpuDestroyMeshLayouts(gpu_t* gpu);
 
 gpu_t* gpuCreate(heap_t* heap, wm_window_t* window) {
 	gpu_t* gpu = heapAlloc(heap, sizeof(gpu_t), 8);
@@ -283,12 +292,349 @@ gpu_t* gpuCreate(heap_t* heap, wm_window_t* window) {
 
 	heapFree(heap, images);
 
+	//
+	// ================== Creating a depth buffer image ==================
+	//
 
+	VkImageCreateInfo depth_image_info = {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+		.imageType = VK_IMAGE_TYPE_2D,
+		.format = VK_FORMAT_D32_SFLOAT,
+		.extent = { surface_cap.currentExtent.width, surface_cap.currentExtent.height },
+		.mipLevels = 1,
+		.arrayLayers = 1,
+		.samples = VK_SAMPLE_COUNT_1_BIT,
+		.tiling = VK_IMAGE_TILING_OPTIMAL,
+		.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+		.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED
+	};
+
+	vk_result = vkCreateImage(gpu->logic_dev, &depth_image_info, NULL, gpu->depth_stencil_img);
+	if (vk_result != VK_SUCCESS) {
+		return gpuError(gpu, "vkCreateImage", "Unable to create the the depth buffer image.");
+	}
+
+	VkMemoryRequirements depth_mem_reqs;
+	vkGetImageMemoryRequirements(gpu->logic_dev, gpu->depth_stencil_img, &depth_mem_reqs);
+
+	VkMemoryAllocateInfo depth_alloc_info = {
+		.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+		.allocationSize = depth_mem_reqs.size,
+		.memoryTypeIndex = gpuGetMemoryTypeIndex(gpu, depth_mem_reqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
+	};
+	vk_result = vkAllocateMemory(gpu->logic_dev, &depth_alloc_info, NULL, &gpu->depth_stencil_mem);
+	if (vk_result != VK_SUCCESS) {
+		return gpuError(gpu, "vkAllocateMemory", "Unable to allocate memory through the depth buffer.");
+	}
+
+	vk_result = vkBindImageMemory(gpu->logic_dev, gpu->depth_stencil_img, gpu->depth_stencil_mem, 0);
+	if (vk_result != VK_SUCCESS) {
+		return gpuError(gpu, "vkBindImageMemory", "Unable to bind the image memory to the depth stencil image.");
+	}
+
+	VkImageViewCreateInfo depth_view_info = {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+		.viewType = VK_IMAGE_VIEW_TYPE_2D,
+		.format = VK_FORMAT_D32_SFLOAT,
+		.subresourceRange = {.levelCount = 1, .layerCount = 1},
+		.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+		.image = gpu->depth_stencil_img
+	};
+	vk_result = vkCreateImageView(gpu->logic_dev, &depth_view_info, NULL, &gpu->depth_stencil_view);
+	if (vk_result != VK_SUCCESS) {
+		return gpuError(gpu, "vkCreateImageView", "Unable to create the image view for the depth buffer.");
+	}
+
+	//
+	// ================== Create the render pass (draws to screen) ==================
+	//
+
+	VkAttachmentDescription attachments[2] = {
+		{
+			.format = VK_FORMAT_B8G8R8A8_SRGB,
+			.samples = VK_SAMPLE_COUNT_1_BIT,
+			.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+			.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+			.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+			.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+			.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+		},
+		{
+			.format = VK_FORMAT_D32_SFLOAT,
+			.samples = VK_SAMPLE_COUNT_1_BIT,
+			.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+			.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+			.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+			.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+			.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+		}
+	};
+
+	VkAttachmentReference color_reference = {
+		.attachment = 0,
+		.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+	};
+
+	VkAttachmentReference depth_reference = {
+		.attachment = 1,
+		.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+	};
+
+	VkSubpassDescription subpass = {
+		.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+		.colorAttachmentCount = 1,
+		.pColorAttachments = &color_reference,
+		.pDepthStencilAttachment = &depth_reference,
+	};
+
+	VkSubpassDependency dependencies[2] = {
+		{
+			.srcSubpass = VK_SUBPASS_EXTERNAL,
+			.dstSubpass = 0,
+			.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+			.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+			.srcAccessMask = 0,
+			.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+			.dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT,
+		},
+		{
+			.srcSubpass = 0,
+			.dstSubpass = VK_SUBPASS_EXTERNAL,
+			.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+			.dstStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+			.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+			.dstAccessMask = 0,
+			.dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT,
+		},
+	};
+
+	VkRenderPassCreateInfo render_pass_info = {
+		.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+		.attachmentCount = _countof(attachments),
+		.pAttachments = attachments,
+		.subpassCount = 1,
+		.pSubpasses = &subpass,
+		.dependencyCount = _countof(dependencies),
+		.pDependencies = dependencies,
+	};
+	vk_result = vkCreateRenderPass(gpu->logic_dev, &render_pass_info, NULL, &gpu->render_pass);
+	if (vk_result != VK_SUCCESS){
+		return gpuError(gpu, "vkCreateRenderPass", "Unable to create render pass.");
+	}
+
+	//
+	// ================== Create the frame buffer objects ==================
+	//
+
+	for (uint32_t x = 0; x < gpu->frame_count; x++) {
+		VkImageView view_buffer_attachments[2] = {
+			gpu->frames[x].view,
+			gpu->depth_stencil_view
+		};
+
+		VkFramebufferCreateInfo frame_buffer_info = {
+			.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
+			.renderPass = gpu->render_pass,
+			.attachmentCount = _countof(view_buffer_attachments),
+			.width = gpu->frame_width,
+			.height = gpu->frame_height,
+			.layers = 1
+		};
+		vk_result = vkCreateFramebuffer(gpu->logic_dev, &frame_buffer_info, NULL, &gpu->frames[x].frame_buff);
+		if (vk_result != VK_SUCCESS) {
+			return gpuError(gpu, "vkCreateFramebuffer", "Unable to create frame buffer at frame count: %zu.", x);
+		}
+	}
+
+	//
+	// ================== Create semaphores for GPU/CPU sync ==================
+	//
+
+	VkSemaphoreCreateInfo semaphore_info = {
+		.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO
+	};
+	vk_result = vkCreateSemaphore(gpu->logic_dev, &semaphore_info, NULL, &gpu->present_comp_sem);
+	if (vk_result != VK_SUCCESS) {
+		return gpuError(gpu, "vkCreateSemaphore", "Unable to create a semaphore.");
+	}
+	vk_result = vkCreateSemaphore(gpu->logic_dev, &semaphore_info, NULL, &gpu->render_comp_sem);
+	if (vk_result != VK_SUCCESS) {
+		return gpuError(gpu, "vkCreateSemaphore", "Unable to create a semaphore.");
+	}
+
+	//
+	// ================== Create descriptor pools ==================
+	//
+	
+	VkDescriptorPoolSize descriptor_pool_sizes[1] = {
+		{
+			.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+			.descriptorCount = 512
+		}
+	};
+
+	VkDescriptorPoolCreateInfo descriptor_pool_info = {
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+		.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
+		.poolSizeCount = _countof(descriptor_pool_sizes),
+		.pPoolSizes = descriptor_pool_sizes,
+		.maxSets = 512
+	};
+	vk_result = vkCreateDescriptorPool(gpu->logic_dev, &descriptor_pool_info, NULL, &gpu->desc_pool);
+	if (vk_result != VK_SUCCESS) {
+		return gpuError(gpu, "vkCreateDescriptorPool", "Unable to create a derscriptor pool.");
+	}
+	
+	//
+	// ================== Create command pools ==================
+	//
+
+	VkCommandPoolCreateInfo cmd_pool_info = {
+		.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+		.queueFamilyIndex = queue_family_idx,
+		.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT
+	};
+	vk_result = vkCreateCommandPool(gpu->logic_dev, &cmd_pool_info, NULL, &gpu->cmd_pool);
+	if (vk_result != VK_SUCCESS) {
+		return gpuError(gpu, "vkCreateCommandPool", "Unable to create a command pool.");
+	}
+
+	//
+	// ================== Create command buffer objects ==================
+	//
+	
+	for (uint32_t x = 0; x < gpu->frame_count; x++) {
+		gpu->frames[x].cmd_buff = heapAlloc(gpu->heap, sizeof(gpu_cmd_buff_t), 8);
+		memset(gpu->frames[x].cmd_buff, 0, sizeof(gpu_cmd_buff_t));
+
+		VkCommandBufferAllocateInfo cmd_buff_alloc_info = {
+			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+			.commandPool = gpu->cmd_pool,
+			.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+			.commandBufferCount = 1
+		};
+		vk_result = vkAllocateCommandBuffers(gpu->logic_dev, &cmd_buff_alloc_info, &gpu->frames[x].cmd_buff->buffer);
+		if (vk_result != VK_SUCCESS) {
+			return gpuError(gpu, "vkAllocateCommandBuffers", "Unable to allocate command buffers for the frame %zu.", x);
+		}
+
+		VkFenceCreateInfo fence_info = {
+			.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+			.flags = VK_FENCE_CREATE_SIGNALED_BIT
+		};
+		vk_result = vkCreateFence(gpu->logic_dev, &fence_info, NULL, &gpu->frames[x].fence);
+		if (vk_result != VK_SUCCESS) {
+			return gpuError(gpu, "vkCreate Fence", "Unable to create a fence for allocating command buffers for the frame %zu.", x);
+		}
+	}
+
+	gpuCreateMeshLayouts(gpu);
+
+	return gpu;
 }
+
 
 void gpuDestroy(gpu_t* gpu) {
 	if(gpu->inst)
 		vkDestroyInstance(gpu->inst, NULL);
+}
+
+static uint32_t gpuGetMemoryTypeIndex(gpu_t* gpu, uint32_t bits, VkMemoryPropertyFlags property_flags) {
+	for (uint32_t x = 0; x < gpu->mem_prop.memoryTypeCount; x++) {
+		if ((bits & (1UL << x)) &&
+			(gpu->mem_prop.memoryTypes[x].propertyFlags & property_flags) == property_flags) {
+			return x;
+		}
+	}
+	debugPrint(DEBUG_PRINT_ERROR, "Get Memory Type Index: Unable to find memory of type (%x)\n", bits);
+	return 0;
+}
+
+static void gpuCreateMeshLayouts(gpu_t* gpu) {
+	//
+	// ================== GPU_MESH_LAYOUT_TRI_P444_I2 ==================
+	//
+
+	gpu->mesh_input_asm_info[GPU_MESH_LAYOUT_TRI_P444_I2] = (VkPipelineInputAssemblyStateCreateInfo) {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+		.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
+	};
+
+	VkVertexInputBindingDescription* vertex_binding = heapAlloc(gpu->heap, sizeof(VkVertexInputBindingDescription), 0);
+	vertex_binding->binding = 0;
+	vertex_binding->stride = 12;
+	vertex_binding->inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+	VkVertexInputAttributeDescription* vertex_attributes = heapAlloc(gpu->heap, sizeof(VkVertexInputAttributeDescription), 8);
+	vertex_attributes[0] = (VkVertexInputAttributeDescription) {
+		.binding = 0,
+		.location = 0,
+		.format = VK_FORMAT_R32G32B32_SFLOAT,
+		.offset = 0,
+	};
+
+	gpu->mesh_vtx_input_info[GPU_MESH_LAYOUT_TRI_P444_I2] = (VkPipelineVertexInputStateCreateInfo) {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+		.vertexBindingDescriptionCount = 1,
+		.pVertexBindingDescriptions = vertex_binding,
+		.vertexAttributeDescriptionCount = 1,
+		.pVertexAttributeDescriptions = vertex_attributes,
+	};
+
+	gpu->mesh_idx_type[GPU_MESH_LAYOUT_TRI_P444_I2] = VK_INDEX_TYPE_UINT16;
+	gpu->mesh_idx_size[GPU_MESH_LAYOUT_TRI_P444_I2] = 2;
+	gpu->mesh_vtx_size[GPU_MESH_LAYOUT_TRI_P444_I2] = 12;
+
+	//
+	// ================== GPU_MESH_LAYOUT_TRI_P444_C444_I2 ==================
+	//
+
+	gpu->mesh_input_asm_info[GPU_MESH_LAYOUT_TRI_P444_C444_I2] = (VkPipelineInputAssemblyStateCreateInfo){
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+		.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
+	};
+
+	VkVertexInputBindingDescription* vertex_binding = heapAlloc(gpu->heap, sizeof(VkVertexInputBindingDescription), 0);
+	vertex_binding->binding = 0;
+	vertex_binding->stride = 24;
+	vertex_binding->inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+	VkVertexInputAttributeDescription* vertex_attributes = heapAlloc(gpu->heap, 2 * sizeof(VkVertexInputAttributeDescription), 8);
+	vertex_attributes[0] = (VkVertexInputAttributeDescription){
+		.binding = 0,
+		.location = 0,
+		.format = VK_FORMAT_R32G32B32_SFLOAT,
+		.offset = 0,
+	};
+	vertex_attributes[1] = (VkVertexInputAttributeDescription){
+		.binding = 0,
+		.location = 1,
+		.format = VK_FORMAT_R32G32B32_SFLOAT,
+		.offset = 12,
+	};
+
+	gpu->mesh_vtx_input_info[GPU_MESH_LAYOUT_TRI_P444_C444_I2] = (VkPipelineVertexInputStateCreateInfo){
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+		.vertexBindingDescriptionCount = 1,
+		.pVertexBindingDescriptions = vertex_binding,
+		.vertexAttributeDescriptionCount = 2,
+		.pVertexAttributeDescriptions = vertex_attributes,
+	};
+
+	gpu->mesh_idx_type[GPU_MESH_LAYOUT_TRI_P444_C444_I2] = VK_INDEX_TYPE_UINT16;
+	gpu->mesh_idx_size[GPU_MESH_LAYOUT_TRI_P444_C444_I2] = 2;
+	gpu->mesh_vtx_size[GPU_MESH_LAYOUT_TRI_P444_C444_I2] = 24;
+}
+
+static void gpuDestroyMeshLayouts(gpu_t* gpu) {
+	for (int x = 0; x < _countof(gpu->mesh_vtx_input_info); x++) {
+		if (gpu->mesh_vtx_input_info[x].pVertexAttributeDescriptions) {
+			heapFree(gpu->heap, gpu->mesh_vtx_input_info[x].pVertexBindingDescriptions);
+			heapFree(gpu->heap, gpu->mesh_vtx_input_info[x].pVertexAttributeDescriptions);
+		}
+	}
 }
 
 void* gpuError(gpu_t* gpu, const char* fn_name, const char* reason) {

@@ -16,9 +16,14 @@
 
 typedef struct gpu_t gpu_t;								// Holds GPU data
 typedef struct gpu_frame_t gpu_frame_t;					// Holds frame data
+typedef struct gpu_cmd_buff_t gpu_cmd_buff_t;			// Holds command buffer data
 
-typedef struct gpu_cmd_buff_t gpu_cmd_buff_t;
-
+// MESH LAYOUTS
+typedef enum gpu_mesh_layout_t {
+	GPU_MESH_LAYOUT_TRI_P444_I2,
+	GPU_MESH_LAYOUT_TRI_P444_C444_I2,
+	GPU_MESH_LAYOUT_COUNT	// use this to track the total amount of mesh layouts (put it at the end)
+};
 
 
 // others
