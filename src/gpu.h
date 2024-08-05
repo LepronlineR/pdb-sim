@@ -12,11 +12,11 @@
 
 */
 
-// GPU
-
 typedef struct gpu_t gpu_t;								// Holds GPU data
 typedef struct gpu_frame_t gpu_frame_t;					// Holds frame data
 typedef struct gpu_cmd_buff_t gpu_cmd_buff_t;			// Holds command buffer data
+typedef struct gpu_mesh_t gpu_mesh_t;
+
 
 // MESH LAYOUTS
 typedef enum gpu_mesh_layout_t {
@@ -35,7 +35,9 @@ void* gpuError(gpu_t* gpu, const char* fn_name, const char* reason);
 
 // FNs
 gpu_t* gpuCreate(heap_t* heap, wm_window_t* window);
-
 void gpuDestroy(gpu_t* gpu);
+
+
+void gpuCommandDraw(gpu_t* gpu, gpu_cmd_buff_t* cmd_buff);
 
 #endif

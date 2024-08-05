@@ -11,6 +11,17 @@ typedef struct gpu_cmd_buff_t {
 	int vtx_count;
 } gpu_cmd_buff_t;
 
+typedef struct gpu_mesh_t {
+	VkBuffer idx_buff;
+	VkDeviceMemory idx_mem;
+	int idx_count;
+	VkIndexType idx_type;
+
+	VkBuffer vtx_buff;
+	VkDeviceMemory vtx_mem;
+	int vtx_count;
+} gpu_mesh_t;
+
 typedef struct gpu_frame_t {
 	VkImage img;
 	VkImageView view;
@@ -539,6 +550,18 @@ gpu_t* gpuCreate(heap_t* heap, wm_window_t* window) {
 void gpuDestroy(gpu_t* gpu) {
 	if(gpu->inst)
 		vkDestroyInstance(gpu->inst, NULL);
+}
+
+void gpuCommandBind(gpu_t* gpu, gpu_cmd_buff_t* cmd_buff, gpu_mesh_t* mesh) {
+
+}
+
+void gpuCommandDraw(gpu_t* gpu, gpu_cmd_buff_t* cmd_buff) {
+	if (cmd_buff->idx_count) {
+		vkCmdDrawIndexed(cmd_buff->buffer, cmd_buff->idx_count, 1, 0, 0, 0);
+	} else {
+		vkCmdDraw(cmd_buff->buffer, cmd_buff->vtx_count, 1, 0, 0);
+	}
 }
 
 static uint32_t gpuGetMemoryTypeIndex(gpu_t* gpu, uint32_t bits, VkMemoryPropertyFlags property_flags) {
