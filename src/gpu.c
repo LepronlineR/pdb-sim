@@ -11,6 +11,21 @@ typedef struct gpu_cmd_buff_t {
 	int vtx_count;
 } gpu_cmd_buff_t;
 
+typedef struct gpu_pipeline_t {
+	VkPipelineLayout pipeline_layout;
+	VkPipeline pipeline;
+} gpu_pipeline_t;
+
+typedef struct gpu_descriptor_t {
+	VkDescriptorSet descriptor;
+} gpu_descriptor_t;
+
+typedef struct gpu_shader_t {
+	VkShaderModule vtx_module;
+	VkShaderModule frag_module;
+	VkDescriptorSetLayout descriptor_set_layout;
+} gpu_shader_t;
+
 typedef struct gpu_mesh_t {
 	VkBuffer idx_buff;
 	VkDeviceMemory idx_mem;
@@ -61,7 +76,7 @@ typedef struct gpu_t {
 
 	gpu_frame_t* frames;
 	uint32_t frame_count;
-	uint32_t frame_index;
+	uint32_t frame_idx;
 
 	heap_t* heap;
 } gpu_t;
@@ -548,12 +563,194 @@ gpu_t* gpuCreate(heap_t* heap, wm_window_t* window) {
 
 
 void gpuDestroy(gpu_t* gpu) {
-	if(gpu->inst)
-		vkDestroyInstance(gpu->inst, NULL);
+	if (gpu) {
+		if (gpu->queue)
+			vkQueueWaitIdle(gpu->queue);
+
+		gpuDestroyMeshLayouts(gpu);
+
+		if (gpu->depth_stencil_img)
+			vkDestroyImage(gpu->logic_dev, gpu->depth_stencil_img, NULL);
+		if (gpu->depth_stencil_view)
+			vkDestroyImageView(gpu->logic_dev, gpu->depth_stencil_view, NULL);
+		if (gpu->depth_stencil_mem)
+			vkFreeMemory(gpu->logic_dev, gpu->depth_stencil_mem, NULL);
+			
+
+		if (gpu->present_comp_sem)
+			vkDestroySemaphore(gpu->logic_dev, gpu->present_comp_sem, NULL);
+		if (gpu->render_comp_sem)
+			vkDestroySemaphore(gpu->logic_dev, gpu->render_comp_sem, NULL);
+
+		if (gpu->swap_chain)
+			vkDestroySwapchainKHR(gpu->logic_dev, gpu->swap_chain, NULL);
+
+		if (gpu->desc_pool)
+			vkDestroyDescriptorPool(gpu->logic_dev, gpu->desc_pool, NULL);
+		
+		if (gpu->cmd_pool)
+			vkDestroyCommandPool(gpu->logic_dev, gpu->cmd_pool, NULL);
+
+		if (gpu->frames) {
+			for (uint32_t x = 0; x < gpu->frame_count; x++) {
+				gpu_frame_t* frame = &gpu->frames[x];
+				if (frame->fence)
+					vkDestroyFence(gpu->logic_dev, frame->fence, NULL);
+				if (frame->frame_buff)
+					vkDestroyFramebuffer(gpu->logic_dev, frame->frame_buff, NULL);
+				if (frame->view)
+					vkDestroyImageView(gpu->logic_dev, frame->view, NULL);
+				if (frame->cmd_buff) {
+					vkFreeCommandBuffers(gpu->logic_dev, gpu->cmd_pool, 1, frame->cmd_buff);
+					heapFree(gpu->heap, frame->cmd_buff);
+				}
+			}
+			heapFree(gpu->heap, gpu->frames);
+		}
+
+		if (gpu->logic_dev)
+			vkDestroyDevice(gpu->logic_dev, NULL);
+
+		if (gpu->surface)
+			vkDestroySurfaceKHR(gpu->inst, gpu->surface, NULL);
+
+	
+		heapFree(gpu->heap, gpu);
+	}
 }
 
-void gpuCommandBind(gpu_t* gpu, gpu_cmd_buff_t* cmd_buff, gpu_mesh_t* mesh) {
+gpu_cmd_buff_t* gpuBeginFrameUpdate(gpu_t* gpu) {
+	
+	gpu_frame_t* frame = &gpu->frames[gpu->frame_idx];
 
+	VkCommandBufferBeginInfo command_buff_info = {
+		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO
+	};
+	VkResult vk_result = vkBeginCommandBuffer(frame->cmd_buff, &command_buff_info);
+	if (vk_result != VK_SUCCESS) { // NOTE: as long as this works, everything else should be fine
+		return gpuError(gpu, "vkBeginCommandBuffer", "Unable to create a command buffer on begin frame update.");
+	}
+
+	VkClearValue clear_value[2] = {
+		{.color = {.float32 = { 0.0f, 0.0f, 0.2f, 1.0f }}},
+		{.depthStencil = {.depth = 1.0f, .stencil = 0}}
+	};
+
+	VkRenderPassBeginInfo render_pass_begin_info = {
+		.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
+		.renderPass = gpu->render_pass,
+		.renderArea.extent.height = gpu->frame_height,
+		.renderArea.extent.width = gpu->frame_width,
+		.clearValueCount = _countof(clear_value),
+		.framebuffer = frame->frame_buff
+	};
+
+	vkCmdBeginRenderPass(frame->cmd_buff->buffer, &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
+
+	VkViewport viewport = {
+		.height = (float) gpu->frame_height,
+		.width = (float) gpu->frame_width,
+		.minDepth = 0.0f,
+		.maxDepth = 1.0f,
+	};
+	vkCmdSetViewport(frame->cmd_buff->buffer, 0, 1, &viewport);
+
+	VkRect2D scissor = {
+		.extent.width = gpu->frame_width,
+		.extent.height = gpu->frame_height,
+	};
+	vkCmdSetScissor(frame->cmd_buff->buffer, 0, 1, &scissor);
+
+	return frame->cmd_buff;
+}
+
+void gpuEndFrameUpdate(gpu_t* gpu) {
+	gpu_frame_t* frame = &gpu->frames[gpu->frame_idx];
+	gpu->frame_idx = (gpu->frame_idx + 1) % gpu->frame_count;
+
+	vkCmdEndRenderPass(frame->cmd_buff->buffer);
+	VkResult result = vkEndCommandBuffer(frame->cmd_buff->buffer);
+	if (result != VK_SUCCESS) {
+		return gpuError(gpu, "vkEndCommandBuffer", "Unable to end command buffer during ending the frame update.");
+	}
+
+	uint32_t image_idx;
+	result = vkAcquireNextImageKHR(gpu->logic_dev, gpu->swap_chain, UINT64_MAX, gpu->present_comp_sem, VK_NULL_HANDLE, &image_idx);
+	if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
+		return gpuError(gpu, "vkAcquireNextImageKHR", "Unable to acquire the next image during ending the frame update.");
+	}
+
+	vkWaitForFences(gpu->logic_dev, 1, &frame->fence, VK_TRUE, UINT64_MAX);
+	vkResetFences(gpu->logic_dev, 1, &frame->fence);
+
+	VkPipelineStageFlags wait_stage_mask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+	VkSubmitInfo submit_info = {
+		.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+		.pWaitDstStageMask = &wait_stage_mask,
+		.waitSemaphoreCount = 1,
+		.signalSemaphoreCount = 1,
+		.pCommandBuffers = &frame->cmd_buff->buffer,
+		.commandBufferCount = 1,
+		.pWaitSemaphores = &gpu->present_comp_sem,
+		.pSignalSemaphores = &gpu->render_comp_sem,
+	};
+
+	result = vkQueueSubmit(gpu->queue, 1, &submit_info, frame->fence);
+	if (result != VK_SUCCESS) {
+		return gpuError(gpu, "vkQueueSubmit", "Unable to submit the queue when ending a frame update.");
+	}
+
+	VkPresentInfoKHR present_info = {
+		.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+		.swapchainCount = 1,
+		.pSwapchains = &gpu->swap_chain,
+		.pImageIndices = &image_idx,
+		.pWaitSemaphores = &gpu->render_comp_sem,
+		.waitSemaphoreCount = 1
+	};
+	result = vkQueuePresentKHR(gpu->queue, &present_info);
+	if (result != VK_SUCCESS) {
+		return gpuError(gpu, "vkQueuePresentKHR", "Unable to present the queue when ending a frame update.");
+	}
+}
+
+gpu_descriptor_t* gpuCreateDescriptorSets(gpu_t* gpu, const gpu_descriptor_info_t* descriptor) {
+	gpu_descriptor_t* descriptor = heapAlloc(gpu->heap, sizeof(gpu_descriptor_t), 8);
+	memset(descriptor, 0, sizeof(*descriptor));
+	
+	VkDescriptorSetAllocateInfo descriptor_set_alloc_info = {
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+		.descriptorPool = gpu->desc_pool,
+		.descriptorSetCount = 1,
+		.pSetLayouts = &descriptor->shader->descriptor_set_layout
+	};
+
+}
+
+void gpuCommandBindPipeline(gpu_cmd_buff_t* cmd_buff, gpu_pipeline_t* pipeline) {
+	vkCmdBindPipeline(cmd_buff->buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->pipeline);
+	cmd_buff->pipeline_layout = pipeline->pipeline_layout;
+}
+
+void gpuCommandBindDescriptorSets(gpu_cmd_buff_t* cmd_buff, gpu_descriptor_t* descriptor) {
+	vkCmdBindDescriptorSets(cmd_buff->buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, cmd_buff->pipeline_layout, 0, 1, &descriptor->descriptor, 0, NULL);
+}
+
+void gpuCommandBindMesh(gpu_t* gpu, gpu_cmd_buff_t* cmd_buff, gpu_mesh_t* mesh) {
+	if (mesh->vtx_count > 0) {
+		VkDeviceSize dev_size = 0;
+		vkCmdBindVertexBuffers(cmd_buff->buffer, 0, 1, &mesh->vtx_buff, &dev_size);
+		cmd_buff->vtx_count = mesh->vtx_count;
+	} else {
+		cmd_buff->vtx_count = 0;
+	}
+
+	if (mesh->idx_count > 0) {
+		vkCmdBindIndexBuffer(cmd_buff->buffer, mesh->idx_buff, 0, mesh->idx_type);
+		cmd_buff->idx_count = mesh->idx_count;
+	} else {
+		cmd_buff->idx_count = 0;
+	}
 }
 
 void gpuCommandDraw(gpu_t* gpu, gpu_cmd_buff_t* cmd_buff) {
@@ -660,8 +857,17 @@ static void gpuDestroyMeshLayouts(gpu_t* gpu) {
 	}
 }
 
+void gpuQueueWaitIdle(gpu_t* gpu) {
+	vkQueueWaitIdle(gpu->queue);
+}
+
+uint32_t gpuGetFrameCount(gpu_t* gpu) {
+	return gpu->frame_count;
+}
+
 void* gpuError(gpu_t* gpu, const char* fn_name, const char* reason) {
 	debugPrint(DEBUG_PRINT_ERROR, "%s: %s\n", fn_name, reason);
 	gpuDestroy(gpu);
 	return NULL;
 }
+
