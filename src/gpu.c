@@ -4,6 +4,8 @@
 #include "debug.h"
 #include "wm.h"
 
+#include <malloc.h>
+
 typedef struct gpu_cmd_buff_t {
 	VkCommandBuffer buffer;
 	VkPipelineLayout pipeline_layout;
@@ -17,7 +19,7 @@ typedef struct gpu_pipeline_t {
 } gpu_pipeline_t;
 
 typedef struct gpu_descriptor_t {
-	VkDescriptorSet descriptor;
+	VkDescriptorSet set;
 } gpu_descriptor_t;
 
 typedef struct gpu_shader_t {
@@ -25,6 +27,12 @@ typedef struct gpu_shader_t {
 	VkShaderModule frag_module;
 	VkDescriptorSetLayout descriptor_set_layout;
 } gpu_shader_t;
+
+typedef struct gpu_uniform_buffer_t {
+	VkBuffer buffer;
+	VkDeviceMemory dev_mem;
+	VkDescriptorBufferInfo descriptor;
+} gpu_uniform_buffer_t;
 
 typedef struct gpu_mesh_t {
 	VkBuffer idx_buff;
@@ -84,6 +92,10 @@ typedef struct gpu_t {
 static uint32_t gpuGetMemoryTypeIndex(gpu_t* gpu, uint32_t bits, VkMemoryPropertyFlags property_flags);
 static void gpuCreateMeshLayouts(gpu_t* gpu);
 static void gpuDestroyMeshLayouts(gpu_t* gpu);
+
+//  --------------------------------------------------------------------------
+//								INIT/DESTROY GPU
+// 
 
 gpu_t* gpuCreate(heap_t* heap, wm_window_t* window) {
 	gpu_t* gpu = heapAlloc(heap, sizeof(gpu_t), 8);
@@ -189,13 +201,13 @@ gpu_t* gpuCreate(heap_t* heap, wm_window_t* window) {
 	// ================== Specifying queues to be created ==================
 	//
 
-	float queue_priorities = 0.0f;
+	float* queue_priorities = _alloca(sizeof(float) * queue_count);
 
 	VkDeviceQueueCreateInfo queue_info = {
 		.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
 		.queueFamilyIndex = queue_family_idx,
 		.queueCount = queue_count,
-		.pQueuePriorities = &queue_priorities
+		.pQueuePriorities = queue_priorities
 	};
 
 	const char* device_extensions[] = {
@@ -561,7 +573,6 @@ gpu_t* gpuCreate(heap_t* heap, wm_window_t* window) {
 	return gpu;
 }
 
-
 void gpuDestroy(gpu_t* gpu) {
 	if (gpu) {
 		if (gpu->queue)
@@ -618,6 +629,10 @@ void gpuDestroy(gpu_t* gpu) {
 		heapFree(gpu->heap, gpu);
 	}
 }
+
+//  --------------------------------------------------------------------------
+//								FRAME UPDATES
+// 
 
 gpu_cmd_buff_t* gpuBeginFrameUpdate(gpu_t* gpu) {
 	
@@ -714,7 +729,11 @@ void gpuEndFrameUpdate(gpu_t* gpu) {
 	}
 }
 
-gpu_descriptor_t* gpuCreateDescriptorSets(gpu_t* gpu, const gpu_descriptor_info_t* descriptor) {
+//  --------------------------------------------------------------------------
+//								DESCRIPTOR SETS
+// 
+
+gpu_descriptor_t* gpuCreateDescriptorSets(gpu_t* gpu, const gpu_descriptor_info_t* descriptor_info) {
 	gpu_descriptor_t* descriptor = heapAlloc(gpu->heap, sizeof(gpu_descriptor_t), 8);
 	memset(descriptor, 0, sizeof(*descriptor));
 	
@@ -722,9 +741,160 @@ gpu_descriptor_t* gpuCreateDescriptorSets(gpu_t* gpu, const gpu_descriptor_info_
 		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
 		.descriptorPool = gpu->desc_pool,
 		.descriptorSetCount = 1,
-		.pSetLayouts = &descriptor->shader->descriptor_set_layout
+		.pSetLayouts = &descriptor_info->shader->descriptor_set_layout
+	};
+	VkResult vk_result = vkAllocateDescriptorSets(gpu->logic_dev, &descriptor_set_alloc_info, &descriptor->set);
+	if (vk_result != VK_SUCCESS) {
+		return gpuError(gpu, "vkAllocateDescriptorSets", "Unalbe to allocate for a descriptor set.");
+	}
+
+	VkWriteDescriptorSet* write_descriptor_set = _alloca(sizeof(VkWriteDescriptorSet) * descriptor_info->uniform_buffer_count);
+	for (int x = 0; x < descriptor_info->uniform_buffer_count; x++) {
+		write_descriptor_set[x] = (VkWriteDescriptorSet){
+			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+			.dstSet = descriptor->set,
+			.descriptorCount = 1,
+			.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+			.pBufferInfo = &descriptor_info->uniform_buffers[x]->descriptor,
+			.dstBinding = x
+		};
+	}
+	vkUpdateDescriptorSets(gpu->logic_dev, descriptor_info->uniform_buffer_count, write_descriptor_set, 0, NULL);
+	
+	return descriptor;
+}
+
+void gpuDestroyDescriptorSets(gpu_t* gpu, gpu_descriptor_t* descriptor) {
+	if (descriptor) {
+		if (descriptor->set)
+			vkFreeDescriptorSets(gpu->logic_dev, gpu->desc_pool, 1, &descriptor->set);
+		heapFree(gpu->heap, descriptor);
+	}
+}
+
+void gpuCommandBindDescriptorSets(gpu_cmd_buff_t* cmd_buff, gpu_descriptor_t* descriptor) {
+	vkCmdBindDescriptorSets(cmd_buff->buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, cmd_buff->pipeline_layout, 0, 1, &descriptor->set, 0, NULL);
+}
+
+//  --------------------------------------------------------------------------
+//								    PIPELINE
+// 
+
+gpu_pipeline_t* gpuCreatePipeline(gpu_t* gpu, const gpu_pipeline_info_t* pipeline_info) {
+	gpu_pipeline_t* pipeline = heapAlloc(gpu->heap, sizeof(gpu_pipeline_t), 8);
+	memset(pipeline, 0, sizeof(*pipeline));
+
+	VkPipelineRasterizationStateCreateInfo raster_state_info = {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+		.polygonMode = VK_POLYGON_MODE_FILL,
+		.cullMode = VK_CULL_MODE_BACK_BIT,
+		.frontFace = VK_FRONT_FACE_CLOCKWISE,
+		.lineWidth = 1.0f
 	};
 
+	VkPipelineColorBlendAttachmentState color_blend_state = {
+		.colorWriteMask = 0xf,
+		.blendEnable = VK_FALSE
+	};
+
+	VkPipelineColorBlendStateCreateInfo color_blend_state_info = {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+		.attachmentCount = 1,
+		.pAttachments = &color_blend_state
+	};
+
+	VkPipelineViewportStateCreateInfo viewport_state_info = {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+		.viewportCount = 1,
+		.scissorCount = 1
+	};
+
+	VkPipelineDepthStencilStateCreateInfo depth_stencil_state_info = {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+		.depthTestEnable = VK_TRUE,
+		.depthWriteEnable = VK_TRUE,
+		.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL,
+		.depthBoundsTestEnable = VK_FALSE,
+		.back.failOp = VK_STENCIL_OP_KEEP,
+		.back.passOp = VK_STENCIL_OP_KEEP,
+		.back.compareOp = VK_COMPARE_OP_ALWAYS,
+		.stencilTestEnable = VK_FALSE
+	};
+
+	VkPipelineMultisampleStateCreateInfo multisample_state_info = {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+		.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT
+	};
+
+	VkPipelineShaderStageCreateInfo shader_stage_info[2] = {
+		{
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+			.stage = VK_SHADER_STAGE_VERTEX_BIT,
+			.module = pipeline_info->shader->vtx_module,
+			.pName = "main"
+		},
+		{
+			.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+			.stage = VK_SHADER_STAGE_FRAGMENT_BIT,
+			.module = pipeline_info->shader->frag_module,
+			.pName = "main"
+		}
+	};
+
+	VkDynamicState dynamic_state[2] = {
+		VK_DYNAMIC_STATE_VIEWPORT,
+		VK_DYNAMIC_STATE_SCISSOR
+	};
+	VkPipelineDynamicStateCreateInfo dynamic_state_info = {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+		.dynamicStateCount = _countof(dynamic_state),
+		.pDynamicStates = dynamic_state
+	};
+
+	VkPipelineLayoutCreateInfo pipeline_layout_info = {
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
+		.setLayoutCount = 1,
+		.pSetLayouts = &pipeline_info->shader->descriptor_set_layout
+	};
+
+	VkResult vk_result = vkCreatePipelineLayout(gpu->logic_dev, &pipeline_layout_info, NULL, &pipeline->pipeline_layout);
+	if (vk_result != VK_SUCCESS) {
+		return gpuError(gpu, "vkCreatePipelineLayout", "Unable to create a pipeline layout.");
+	}
+
+	VkGraphicsPipelineCreateInfo graphics_pipeline_info = {
+		.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+		.layout = pipeline->pipeline_layout,
+		.pColorBlendState = &color_blend_state_info,
+		.pDepthStencilState = &depth_stencil_state_info,
+		.pDynamicState = &dynamic_state_info,
+		.stageCount = _countof(shader_stage_info),
+		.pStages = shader_stage_info,
+		.pRasterizationState = &raster_state_info,
+		.pColorBlendState = &color_blend_state_info,
+		.pViewportState = &viewport_state_info,
+		.pVertexInputState = &gpu->mesh_vtx_input_info[pipeline_info->mesh_layout],
+		.pInputAssemblyState = &gpu->mesh_input_asm_info[pipeline_info->mesh_layout],
+		.pMultisampleState = &multisample_state_info,
+		.renderPass = gpu->render_pass,
+	};
+	vk_result = vkCreateGraphicsPipelines(gpu->logic_dev, NULL, 1, &graphics_pipeline_info, NULL, &pipeline->pipeline);
+	if (vk_result != VK_SUCCESS) {
+		return gpuError(gpu, "vkCreateGraphicsPipelines", "Unable to create a graphics pipeline.");
+	}
+
+	return pipeline;
+}
+
+void gpuDestroyPipeline(gpu_t* gpu, gpu_pipeline_t* pipeline) {
+	if (pipeline) {
+		if (pipeline->pipeline_layout)
+			vkDestroyPipelineLayout(gpu->logic_dev, pipeline->pipeline_layout, NULL);
+		if (pipeline->pipeline)
+			vkDestroyPipeline(gpu->logic_dev, pipeline->pipeline, NULL);
+
+		heapFree(gpu->heap, pipeline);
+	}
 }
 
 void gpuCommandBindPipeline(gpu_cmd_buff_t* cmd_buff, gpu_pipeline_t* pipeline) {
@@ -732,8 +902,176 @@ void gpuCommandBindPipeline(gpu_cmd_buff_t* cmd_buff, gpu_pipeline_t* pipeline) 
 	cmd_buff->pipeline_layout = pipeline->pipeline_layout;
 }
 
-void gpuCommandBindDescriptorSets(gpu_cmd_buff_t* cmd_buff, gpu_descriptor_t* descriptor) {
-	vkCmdBindDescriptorSets(cmd_buff->buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, cmd_buff->pipeline_layout, 0, 1, &descriptor->descriptor, 0, NULL);
+//  --------------------------------------------------------------------------
+//								 UNIFORM BUFFER
+// 
+
+gpu_uniform_buffer_t* gpuCreateUniformBuffer(gpu_t* gpu, const gpu_uniform_buffer_info_t* ub_info) {
+	gpu_uniform_buffer_t* ub = heapAlloc(gpu->heap, sizeof(gpu_uniform_buffer_t), 8);
+	memset(ub, 0, sizeof(*ub));
+
+	VkBufferCreateInfo buffer_info = {
+		.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+		.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+		.size = ub_info->size
+	};
+	VkResult vk_result = vkCreateBuffer(gpu->logic_dev, &buffer_info, NULL, &ub->buffer);
+	if (vk_result != VK_SUCCESS) {
+		return gpuError(gpu, "vkCreateBuffer", "Unable to create the uniform buffer.");
+	}
+
+	VkMemoryRequirements mem_req;
+	vkGetBufferMemoryRequirements(gpu->logic_dev, ub->buffer, &mem_req);
+
+	VkMemoryAllocateInfo mem_alloc = {
+		.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+		.allocationSize = mem_req.size,
+		.memoryTypeIndex = gpuGetMemoryTypeIndex(gpu, mem_req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+	};
+	vk_result = vkAllocateMemory(gpu->logic_dev, &mem_alloc, NULL, &ub->dev_mem);
+	if (vk_result != VK_SUCCESS) {
+		return gpuError(gpu, "vkAllocateMemory", "Unable to allocate memory for the uniform buffer.");
+	}
+
+	vk_result = vkBindBufferMemory(gpu->logic_dev, ub->buffer, ub->dev_mem, 0);
+	if (vk_result != VK_SUCCESS) {
+		return gpuError(gpu, "vkBindBufferMemory", "Unable to bind memory for the uniform buffer.");
+	}
+
+	ub->descriptor.buffer = ub->buffer;
+	ub->descriptor.range = ub_info->size;
+
+	gpuUpdateUniformBuffer(gpu, ub, ub_info->data, ub_info->size);
+
+	return ub;
+}
+
+void gpuUpdateUniformBuffer(gpu_t* gpu, gpu_uniform_buffer_t* ub, const void* data, size_t size) {
+	void* mem_alloc = NULL;
+	VkResult vk_result = vkMapMemory(gpu->logic_dev, ub->dev_mem, 0, size, 0, &mem_alloc);
+	if (vk_result == VK_SUCCESS) {
+		memcpy(mem_alloc, data, size);
+		vkUnmapMemory(gpu->logic_dev, ub->dev_mem);
+	}
+}
+
+void gpuDestroyUniformBuffer(gpu_t* gpu, gpu_uniform_buffer_t* ub) {
+	if (ub) {
+		if (ub->buffer)
+			vkDestroyBuffer(gpu->logic_dev, ub->buffer, NULL);
+		if (ub->dev_mem)
+			vkFreeMemory(gpu->logic_dev, ub->dev_mem, NULL);
+
+		heapFree(gpu, ub);
+	}
+}
+
+
+//  --------------------------------------------------------------------------
+//								      MESH
+// 
+
+gpu_mesh_t* gpuCreateMesh(gpu_t* gpu, gpu_mesh_info_t* mesh_info) {
+	gpu_mesh_t* mesh = heapAlloc(gpu->heap, sizeof(gpu_mesh_t), 8);
+	memset(mesh, 0, sizeof(*mesh));
+
+	mesh->idx_type = gpu->mesh_idx_type[mesh_info->layout];
+	mesh->idx_count = (int) mesh_info->idx_data_size / gpu->mesh_idx_size[mesh_info->layout];
+	mesh->vtx_count = (int) mesh_info->vtx_data_size / gpu->mesh_vtx_size[mesh_info->layout];
+	
+	//
+	// ================== Vertex Data ==================
+	//
+
+	VkBufferCreateInfo vtx_buffer_info = {
+		.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+		.size = mesh_info->vtx_data_size,
+		.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT
+	};
+	VkResult vk_result = vkCreateBuffer(gpu->logic_dev, &vtx_buffer_info, NULL, &mesh->vtx_buff);
+	if (vk_result != VK_SUCCESS) {
+		return gpuError(gpu, "vkCreateBuffer", "Unable to create the vertex buffer for a mesh.");
+	}
+
+	VkMemoryRequirements mem_req;
+	vkGetBufferMemoryRequirements(gpu->logic_dev, mesh->vtx_buff, &mem_req);
+	VkMemoryAllocateInfo mem_alloc = {
+		.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+		.allocationSize = mem_req.size,
+		.memoryTypeIndex = gpuGetMemoryTypeIndex(gpu, mem_req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+	};
+	vk_result = vkAllocateMemory(gpu->logic_dev, &mem_alloc, NULL, &mesh->vtx_mem);
+	if (vk_result != VK_SUCCESS) {
+		return gpuError(gpu, "vkAllocateMemory", "Unable to allocate memory for a vertex (during mesh).");
+	}
+	void* mem_dest = 0;
+	vk_result = vkMapMemory(gpu->logic_dev, mesh->vtx_mem, 0, mem_alloc.allocationSize, 0, &mem_dest);
+	if (vk_result != VK_SUCCESS) {
+		return gpuError(gpu, "vkMapMemory", "Unable to map memory");
+	}
+	memcpy(mem_dest, mesh_info->vtx_data, mesh_info->vtx_data_size);
+	vkUnmapMemory(gpu->logic_dev, mesh->vtx_mem);
+
+	vk_result = vkBindBufferMemory(gpu->logic_dev, mesh->vtx_buff, mesh->vtx_mem, 0);
+	if (vk_result) {
+		return gpuError(gpu, "vkBindBufferMemory", "Unable to bind buffer memory for a vertex (during mesh).");
+	}
+	
+	//
+	// ================== Index Data ==================
+	//
+
+	VkBufferCreateInfo idx_buffer_info = {
+		.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+		.size = mesh_info->idx_data_size,
+		.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT
+	};
+	VkResult vk_result = vkCreateBuffer(gpu->logic_dev, &idx_buffer_info, NULL, &mesh->idx_buff);
+	if (vk_result != VK_SUCCESS) {
+		return gpuError(gpu, "vkCreateBuffer", "Unable to create the index buffer for a mesh.");
+	}
+
+	VkMemoryRequirements mem_req;
+	vkGetBufferMemoryRequirements(gpu->logic_dev, mesh->idx_buff, &mem_req);
+	VkMemoryAllocateInfo mem_alloc = {
+		.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+		.allocationSize = mem_req.size,
+		.memoryTypeIndex = gpuGetMemoryTypeIndex(gpu, mem_req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+	};
+	vk_result = vkAllocateMemory(gpu->logic_dev, &mem_alloc, NULL, &mesh->idx_mem);
+	if (vk_result != VK_SUCCESS) {
+		return gpuError(gpu, "vkAllocateMemory", "Unable to allocate memory for an index (during mesh).");
+	}
+	void* mem_dest = 0;
+	vk_result = vkMapMemory(gpu->logic_dev, mesh->idx_mem, 0, mem_alloc.allocationSize, 0, &mem_dest);
+	if (vk_result != VK_SUCCESS) {
+		return gpuError(gpu, "vkMapMemory", "Unable to map memory");
+	}
+	memcpy(mem_dest, mesh_info->idx_data, mesh_info->idx_data_size);
+	vkUnmapMemory(gpu->logic_dev, mesh->idx_mem);
+
+	vk_result = vkBindBufferMemory(gpu->logic_dev, mesh->idx_buff, mesh->idx_mem, 0);
+	if (vk_result) {
+		return gpuError(gpu, "vkBindBufferMemory", "Unable to bind buffer memory for an index (during mesh).");
+	}
+
+	return mesh;
+}
+
+void gpuDestroyMesh(gpu_t* gpu, gpu_mesh_t* mesh) {
+	if (mesh) {
+		if (mesh->idx_buff)
+			vkDestroyBuffer(gpu->logic_dev, mesh->idx_buff, NULL);
+		if (mesh->vtx_buff)
+			vkDestroyBuffer(gpu->logic_dev, mesh->vtx_buff, NULL);
+
+		if (mesh->idx_mem)
+			vkFreeMemory(gpu->logic_dev, mesh->idx_mem, NULL);
+		if (mesh->vtx_mem)
+			vkFreeMemory(gpu->logic_dev, mesh->vtx_mem, NULL);
+
+		heapFree(gpu->heap, mesh);
+	}
 }
 
 void gpuCommandBindMesh(gpu_t* gpu, gpu_cmd_buff_t* cmd_buff, gpu_mesh_t* mesh) {
@@ -756,7 +1094,8 @@ void gpuCommandBindMesh(gpu_t* gpu, gpu_cmd_buff_t* cmd_buff, gpu_mesh_t* mesh) 
 void gpuCommandDraw(gpu_t* gpu, gpu_cmd_buff_t* cmd_buff) {
 	if (cmd_buff->idx_count) {
 		vkCmdDrawIndexed(cmd_buff->buffer, cmd_buff->idx_count, 1, 0, 0, 0);
-	} else {
+	}
+	else {
 		vkCmdDraw(cmd_buff->buffer, cmd_buff->vtx_count, 1, 0, 0);
 	}
 }
@@ -771,6 +1110,10 @@ static uint32_t gpuGetMemoryTypeIndex(gpu_t* gpu, uint32_t bits, VkMemoryPropert
 	debugPrint(DEBUG_PRINT_ERROR, "Get Memory Type Index: Unable to find memory of type (%x)\n", bits);
 	return 0;
 }
+
+//  --------------------------------------------------------------------------
+//								    MESH LAYOUT
+// 
 
 static void gpuCreateMeshLayouts(gpu_t* gpu) {
 	//
@@ -856,6 +1199,75 @@ static void gpuDestroyMeshLayouts(gpu_t* gpu) {
 		}
 	}
 }
+
+//  --------------------------------------------------------------------------
+//								    SHADERS
+// 
+
+gpu_shader_t* gpuCreateShader(gpu_t* gpu, gpu_shader_info_t* shader_info) {
+	gpu_shader_t* shader = heapAlloc(gpu->heap, sizeof(gpu_shader_t), 8);
+	memset(shader, 0, sizeof(*shader));
+
+	VkShaderModuleCreateInfo vertex_module_create_info = {
+		.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+		.codeSize = shader_info->vtx_shader_size,
+		.pCode = shader_info->vtx_shader_data
+	};
+
+	VkResult vk_result = vkCreateShaderModule(gpu->logic_dev, &vertex_module_create_info, NULL, &shader->vtx_module);
+	if (vk_result != VK_SUCCESS) {
+		return gpuError(gpu, "vkCreateShaderModule", "Unable to create the vertex shader module.");
+	}
+
+	VkShaderModuleCreateInfo fragment_module_create_info = {
+		.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+		.codeSize = shader_info->frag_shader_size,
+		.pCode = shader_info->frag_shader_data
+	};
+
+	vk_result = vkCreateShaderModule(gpu->logic_dev, &fragment_module_create_info, NULL, &shader->frag_module);
+	if (vk_result != VK_SUCCESS) {
+		return gpuError(gpu, "vkCreateShaderModule", "Unable to create the fragment shader module.");
+	}
+
+	VkDescriptorSetLayoutBinding* descriptor_set_layout_bindings = alloca(sizeof(VkDescriptorSetLayoutBinding) * shader_info->uniform_buffer_count);
+	for (int x = 0; x < shader_info->uniform_buffer_count; x++) {
+		descriptor_set_layout_bindings[x] = (VkDescriptorSetLayoutBinding){
+			.binding = x,
+			.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT
+		};
+	}
+
+	VkDescriptorSetLayoutCreateInfo descriptor_set_layout_info = {
+		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+		.bindingCount = shader_info->uniform_buffer_count,
+		.pBindings = descriptor_set_layout_bindings
+	};
+	vk_result = vkCreateDescriptorSetLayout(gpu->logic_dev, &descriptor_set_layout_info, NULL, &shader->descriptor_set_layout);
+	if (vk_result != VK_SUCCESS) {
+		return gpuError(gpu, "vkCreateDescriptorSetLayout", "Unable to create the descriptor set layout.");
+	}
+
+	return shader;
+}
+
+void gpuDestroyShader(gpu_t* gpu, gpu_shader_t* shader) {
+	if (shader) {
+		if (shader->vtx_module)
+			vkDestroyShaderModule(gpu->logic_dev, shader->vtx_module, NULL);
+		if (shader->frag_module)
+			vkDestroyShaderModule(gpu->logic_dev, shader->frag_module, NULL);
+		if (shader->descriptor_set_layout)
+			vkDestroyDescriptorSetLayout(gpu->logic_dev, shader->descriptor_set_layout, NULL);
+		heapFree(gpu->heap, shader);
+	}
+}
+
+//  --------------------------------------------------------------------------
+//								    MISC
+// 
 
 void gpuQueueWaitIdle(gpu_t* gpu) {
 	vkQueueWaitIdle(gpu->queue);

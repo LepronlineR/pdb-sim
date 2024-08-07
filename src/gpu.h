@@ -50,6 +50,30 @@ typedef struct gpu_descriptor_info_t {
 	int uniform_buffer_count;
 } gpu_descriptor_info_t;
 
+// UNIFORM BUFFER
+typedef struct gpu_uniform_buffer_info_t {
+	void* data;
+	size_t size;
+} gpu_uniform_buffer_info_t;
+
+// MESH
+typedef struct gpu_mesh_info_t {
+	gpu_mesh_layout_t layout;
+	void* vtx_data;
+	void* idx_data;
+	size_t vtx_data_size;
+	size_t idx_data_size;
+} gpu_mesh_info_t;
+
+// SHADERS
+typedef struct gpu_shader_info_t {
+	void* vtx_shader_data;
+	void* frag_shader_data;
+	size_t vtx_shader_size;
+	size_t frag_shader_size;
+	int uniform_buffer_count;
+} gpu_shader_info_t;
+
 // others
 typedef struct heap_t heap_t;
 typedef struct wm_window_t wm_window_t;
@@ -69,10 +93,21 @@ void gpuEndFrameUpdate(gpu_t* gpu);
 
 gpu_pipeline_t* gpuCreatePipeline(gpu_t* gpu, const gpu_pipeline_info_t* pipeline_info);
 void gpuCommandBindPipeline(gpu_cmd_buff_t* cmd_buff, gpu_pipeline_t* pipeline);
-void gpuDestroyPipeline();
+void gpuDestroyPipeline(gpu_t* gpu, gpu_pipeline_t* pipeline);
 
 gpu_descriptor_t* gpuCreateDescriptorSets(gpu_t* gpu, const gpu_descriptor_info_t* descriptor);
 void gpuCommandBindDescriptorSets(gpu_cmd_buff_t* cmd_buff, gpu_descriptor_t* descriptor);
+void gpuDestroyDescriptorSets(gpu_t* gpu, gpu_descriptor_t* descriptor);
+
+gpu_uniform_buffer_t* gpuCreateUniformBuffer(gpu_t* gpu, const gpu_uniform_buffer_info_t* ub_info);
+void gpuUpdateUniformBuffer(gpu_t* gpu, gpu_uniform_buffer_t* ub, const void* data, size_t size);
+void gpuDestroyUniformBuffer(gpu_t* gpu, gpu_uniform_buffer_t* ub);
+
+gpu_mesh_t* gpuCreateMesh(gpu_t* gpu, gpu_mesh_info_t* mesh_info);
+void gpuDestroyMesh(gpu_t* gpu, gpu_mesh_t* mesh);
+
+gpu_shader_t* gpuCreateShader(gpu_t* gpu, gpu_shader_info_t* shader_info);
+void gpuDestroyShader(gpu_t* gpu, gpu_shader_t* shader);
 
 void gpuCommandDraw(gpu_t* gpu, gpu_cmd_buff_t* cmd_buff);
 
