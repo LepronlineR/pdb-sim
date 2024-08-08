@@ -167,6 +167,7 @@
     <ClInclude Include="atomic.h" />
     <ClInclude Include="debug.h" />
     <ClInclude Include="deque.h" />
+    <ClInclude Include="ecs.h" />
     <ClInclude Include="event.h" />
     <ClInclude Include="fs.h" />
     <ClInclude Include="gpu.h" />
@@ -176,6 +177,7 @@
     <ClInclude Include="moremath.h" />
     <ClInclude Include="mutex.h" />
     <ClInclude Include="quatf.h" />
+    <ClInclude Include="renderer.h" />
     <ClInclude Include="semaphore.h" />
     <ClInclude Include="test.h" />
     <ClInclude Include="thread.h" />

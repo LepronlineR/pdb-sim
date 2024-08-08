@@ -182,5 +182,11 @@
     <ClInclude Include="gpu.h">
       <Filter>Header Files\sys</Filter>
     </ClInclude>
+    <ClInclude Include="renderer.h">
+      <Filter>Header Files\sys</Filter>
+    </ClInclude>
+    <ClInclude Include="ecs.h">
+      <Filter>Header Files\sys</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>
