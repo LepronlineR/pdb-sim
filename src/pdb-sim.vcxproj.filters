@@ -114,6 +114,12 @@
     <ClCompile Include="gpu.c">
       <Filter>Source Files\sys</Filter>
     </ClCompile>
+    <ClCompile Include="ecs.c">
+      <Filter>Source Files\sys</Filter>
+    </ClCompile>
+    <ClCompile Include="transform.c">
+      <Filter>Source Files\math</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\lib\lz4\lz4.h">
@@ -187,6 +193,9 @@
     </ClInclude>
     <ClInclude Include="ecs.h">
       <Filter>Header Files\sys</Filter>
+    </ClInclude>
+    <ClInclude Include="transform.h">
+      <Filter>Header Files\math</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>

@@ -9,8 +9,6 @@ typedef struct ecs_t ecs_t;
 // MISC
 typedef struct heap_t heap_t;
 
-
-
 typedef struct ecs_entity_t {
 	int entity;
 	int sequence;
@@ -22,6 +20,16 @@ typedef struct ecs_query_t {
 	int entity;
 } ecs_query_t;
 
+typedef struct ecs_entity_dense_t {
+	char name[32];
+	void* data;
+} ecs_entity_dense_t;
+
+typedef struct ecs_entity_sparse_t {
+	
+
+} ecs_entity_dense_t;
+
 static ecs_entity_t false_entity = {
 	.entity = -1,
 	.sequence = -1
@@ -30,6 +38,7 @@ static ecs_entity_t false_entity = {
 ecs_t* ecsCreate(heap_t* heap);
 void ecsUpdate(ecs_t* ecs);
 void ecsDestroy(ecs_t* ecs);
+
 
 
 

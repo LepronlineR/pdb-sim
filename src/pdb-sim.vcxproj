@@ -144,6 +144,7 @@
     <ClCompile Include="atomic.c" />
     <ClCompile Include="debug.c" />
     <ClCompile Include="deque.c" />
+    <ClCompile Include="ecs.c" />
     <ClCompile Include="event.c" />
     <ClCompile Include="fs.c" />
     <ClCompile Include="gpu.c" />
@@ -159,6 +160,7 @@
     <ClCompile Include="timer.c" />
     <ClCompile Include="timer_object.c" />
     <ClCompile Include="trace.c" />
+    <ClCompile Include="transform.c" />
     <ClCompile Include="wm.c" />
   </ItemGroup>
   <ItemGroup>
@@ -184,6 +186,7 @@
     <ClInclude Include="timer.h" />
     <ClInclude Include="timer_object.h" />
     <ClInclude Include="trace.h" />
+    <ClInclude Include="transform.h" />
     <ClInclude Include="vec3f.h" />
     <ClInclude Include="wm.h" />
   </ItemGroup>

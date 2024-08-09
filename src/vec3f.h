@@ -147,7 +147,13 @@ __forceinline float vec3fDot(vec3f_t a, vec3f_t b) { return (a.x * b.x) + (a.y *
 // NOTE: n must be normalized (for optimization this will not be checked) 
 // -- the user MUST make sure this is correct or there will be errors in calculations
 //
-__forceinline vec3f_t vec3f_reflect(vec3f_t d, vec3f_t n){ return vec3fSub(d, vec3fScale(n, vec3fDot(d, n) * 2.0f)); }
+__forceinline vec3f_t vec3fReflect(vec3f_t d, vec3f_t n){ return vec3fSub(d, vec3fScale(n, vec3fDot(d, n) * 2.0f)); }
 
-
+// Inverts the values (1/v) if v is zero then set the value to 0
+//
+__forceinline void vec3fInvertValues(vec3f_t* v) {
+    for (int x = 0; x < 3; x++) {
+        v->v[x] = v->v[x] != 0.0f ? 1.0f / v->v[x] : 0.0f;
+    }
+}
 #endif
