@@ -153,6 +153,7 @@
     <ClCompile Include="main.c" />
     <ClCompile Include="mat4f.c" />
     <ClCompile Include="mutex.c" />
+    <ClCompile Include="physics.c" />
     <ClCompile Include="quatf.c" />
     <ClCompile Include="semaphore.c" />
     <ClCompile Include="test.c" />
@@ -178,6 +179,7 @@
     <ClInclude Include="mat4f.h" />
     <ClInclude Include="moremath.h" />
     <ClInclude Include="mutex.h" />
+    <ClInclude Include="physics.h" />
     <ClInclude Include="quatf.h" />
     <ClInclude Include="renderer.h" />
     <ClInclude Include="semaphore.h" />

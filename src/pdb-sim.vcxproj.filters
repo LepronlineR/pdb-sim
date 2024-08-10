@@ -120,6 +120,9 @@
     <ClCompile Include="transform.c">
       <Filter>Source Files\math</Filter>
     </ClCompile>
+    <ClCompile Include="physics.c">
+      <Filter>Source Files\sys</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\lib\lz4\lz4.h">
@@ -196,6 +199,9 @@
     </ClInclude>
     <ClInclude Include="transform.h">
       <Filter>Header Files\math</Filter>
+    </ClInclude>
+    <ClInclude Include="physics.h">
+      <Filter>Header Files\sys</Filter>
     </ClInclude>
   </ItemGroup>
 </Project>
