@@ -49,6 +49,9 @@
     <Filter Include="Source Files\test">
       <UniqueIdentifier>{93953d8f-42e5-4452-8c32-f0f6d5fae501}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Shaders">
+      <UniqueIdentifier>{edba6db0-4ffa-4930-b0d0-b48f276368c2}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="main.c">
@@ -124,6 +127,9 @@
       <Filter>Source Files\sys</Filter>
     </ClCompile>
     <ClCompile Include="renderer.c">
+      <Filter>Source Files\sys</Filter>
+    </ClCompile>
+    <ClCompile Include="scene.c">
       <Filter>Source Files\sys</Filter>
     </ClCompile>
   </ItemGroup>
@@ -206,5 +212,25 @@
     <ClInclude Include="physics.h">
       <Filter>Header Files\sys</Filter>
     </ClInclude>
+    <ClInclude Include="scene.h">
+      <Filter>Header Files\sys</Filter>
+    </ClInclude>
+    <ClInclude Include="component.h">
+      <Filter>Header Files\sys</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="shaders\triangle.frag">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="shaders\triangle.frag.spv">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="shaders\triangle.vert">
+      <Filter>Shaders</Filter>
+    </None>
+    <None Include="shaders\triangle.vert.spv">
+      <Filter>Shaders</Filter>
+    </None>
   </ItemGroup>
 </Project>

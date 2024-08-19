@@ -156,6 +156,7 @@
     <ClCompile Include="physics.c" />
     <ClCompile Include="quatf.c" />
     <ClCompile Include="renderer.c" />
+    <ClCompile Include="scene.c" />
     <ClCompile Include="semaphore.c" />
     <ClCompile Include="test.c" />
     <ClCompile Include="thread.c" />
@@ -169,6 +170,7 @@
     <ClInclude Include="..\lib\lz4\lz4.h" />
     <ClInclude Include="..\lib\tlsf\tlsf.h" />
     <ClInclude Include="atomic.h" />
+    <ClInclude Include="component.h" />
     <ClInclude Include="debug.h" />
     <ClInclude Include="deque.h" />
     <ClInclude Include="ecs.h" />
@@ -183,6 +185,7 @@
     <ClInclude Include="physics.h" />
     <ClInclude Include="quatf.h" />
     <ClInclude Include="renderer.h" />
+    <ClInclude Include="scene.h" />
     <ClInclude Include="semaphore.h" />
     <ClInclude Include="test.h" />
     <ClInclude Include="thread.h" />
@@ -192,6 +195,12 @@
     <ClInclude Include="transform.h" />
     <ClInclude Include="vec3f.h" />
     <ClInclude Include="wm.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="shaders\triangle.frag" />
+    <None Include="shaders\triangle.frag.spv" />
+    <None Include="shaders\triangle.vert" />
+    <None Include="shaders\triangle.vert.spv" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
