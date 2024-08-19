@@ -155,6 +155,7 @@
     <ClCompile Include="mutex.c" />
     <ClCompile Include="physics.c" />
     <ClCompile Include="quatf.c" />
+    <ClCompile Include="renderer.c" />
     <ClCompile Include="semaphore.c" />
     <ClCompile Include="test.c" />
     <ClCompile Include="thread.c" />

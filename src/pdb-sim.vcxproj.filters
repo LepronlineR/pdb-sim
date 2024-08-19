@@ -123,6 +123,9 @@
     <ClCompile Include="physics.c">
       <Filter>Source Files\sys</Filter>
     </ClCompile>
+    <ClCompile Include="renderer.c">
+      <Filter>Source Files\sys</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\lib\lz4\lz4.h">

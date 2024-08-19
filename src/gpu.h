@@ -105,6 +105,7 @@ void gpuDestroyUniformBuffer(gpu_t* gpu, gpu_uniform_buffer_t* ub);
 
 gpu_mesh_t* gpuCreateMesh(gpu_t* gpu, gpu_mesh_info_t* mesh_info);
 void gpuDestroyMesh(gpu_t* gpu, gpu_mesh_t* mesh);
+void gpuCommandBindMesh(gpu_t* gpu, gpu_cmd_buff_t* cmd_buff, gpu_mesh_t* mesh);
 
 gpu_shader_t* gpuCreateShader(gpu_t* gpu, gpu_shader_info_t* shader_info);
 void gpuDestroyShader(gpu_t* gpu, gpu_shader_t* shader);
