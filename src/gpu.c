@@ -347,7 +347,7 @@ gpu_t* gpuCreate(heap_t* heap, wm_window_t* window) {
 		.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED
 	};
 
-	vk_result = vkCreateImage(gpu->logic_dev, &depth_image_info, NULL, gpu->depth_stencil_img);
+	vk_result = vkCreateImage(gpu->logic_dev, &depth_image_info, NULL, &gpu->depth_stencil_img);
 	if (vk_result != VK_SUCCESS) {
 		return gpuError(gpu, "vkCreateImage", "Unable to create the the depth buffer image.");
 	}
@@ -476,13 +476,14 @@ gpu_t* gpuCreate(heap_t* heap, wm_window_t* window) {
 			.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
 			.renderPass = gpu->render_pass,
 			.attachmentCount = _countof(view_buffer_attachments),
-			.width = gpu->frame_width,
-			.height = gpu->frame_height,
+			.pAttachments = view_buffer_attachments,
+			.width = surface_cap.currentExtent.width,
+			.height = surface_cap.currentExtent.height,
 			.layers = 1
 		};
 		vk_result = vkCreateFramebuffer(gpu->logic_dev, &frame_buffer_info, NULL, &gpu->frames[x].frame_buff);
 		if (vk_result != VK_SUCCESS) {
-			return gpuError(gpu, "vkCreateFramebuffer", "Unable to create frame buffer at frame count: %zu.", x);
+			return gpuError(gpu, "vkCreateFramebuffer", "Unable to create frame buffer");
 		}
 	}
 
@@ -555,7 +556,7 @@ gpu_t* gpuCreate(heap_t* heap, wm_window_t* window) {
 		};
 		vk_result = vkAllocateCommandBuffers(gpu->logic_dev, &cmd_buff_alloc_info, &gpu->frames[x].cmd_buff->buffer);
 		if (vk_result != VK_SUCCESS) {
-			return gpuError(gpu, "vkAllocateCommandBuffers", "Unable to allocate command buffers for the frame %zu.", x);
+			return gpuError(gpu, "vkAllocateCommandBuffers", "Unable to allocate command buffers for the frame.");
 		}
 
 		VkFenceCreateInfo fence_info = {
@@ -564,7 +565,7 @@ gpu_t* gpuCreate(heap_t* heap, wm_window_t* window) {
 		};
 		vk_result = vkCreateFence(gpu->logic_dev, &fence_info, NULL, &gpu->frames[x].fence);
 		if (vk_result != VK_SUCCESS) {
-			return gpuError(gpu, "vkCreate Fence", "Unable to create a fence for allocating command buffers for the frame %zu.", x);
+			return gpuError(gpu, "vkCreate Fence", "Unable to create a fence for allocating command buffers.");
 		}
 	}
 
@@ -612,7 +613,7 @@ void gpuDestroy(gpu_t* gpu) {
 				if (frame->view)
 					vkDestroyImageView(gpu->logic_dev, frame->view, NULL);
 				if (frame->cmd_buff) {
-					vkFreeCommandBuffers(gpu->logic_dev, gpu->cmd_pool, 1, frame->cmd_buff);
+					vkFreeCommandBuffers(gpu->logic_dev, gpu->cmd_pool, 1, &frame->cmd_buff->buffer);
 					heapFree(gpu->heap, frame->cmd_buff);
 				}
 			}
@@ -641,7 +642,7 @@ gpu_cmd_buff_t* gpuBeginFrameUpdate(gpu_t* gpu) {
 	VkCommandBufferBeginInfo command_buff_info = {
 		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO
 	};
-	VkResult vk_result = vkBeginCommandBuffer(frame->cmd_buff, &command_buff_info);
+	VkResult vk_result = vkBeginCommandBuffer(frame->cmd_buff->buffer, &command_buff_info);
 	if (vk_result != VK_SUCCESS) { // NOTE: as long as this works, everything else should be fine
 		return gpuError(gpu, "vkBeginCommandBuffer", "Unable to create a command buffer on begin frame update.");
 	}
@@ -686,13 +687,15 @@ void gpuEndFrameUpdate(gpu_t* gpu) {
 	vkCmdEndRenderPass(frame->cmd_buff->buffer);
 	VkResult result = vkEndCommandBuffer(frame->cmd_buff->buffer);
 	if (result != VK_SUCCESS) {
-		return gpuError(gpu, "vkEndCommandBuffer", "Unable to end command buffer during ending the frame update.");
+		gpuError(gpu, "vkEndCommandBuffer", "Unable to end command buffer during ending the frame update.");
+		return;
 	}
 
 	uint32_t image_idx;
 	result = vkAcquireNextImageKHR(gpu->logic_dev, gpu->swap_chain, UINT64_MAX, gpu->present_comp_sem, VK_NULL_HANDLE, &image_idx);
 	if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
-		return gpuError(gpu, "vkAcquireNextImageKHR", "Unable to acquire the next image during ending the frame update.");
+		gpuError(gpu, "vkAcquireNextImageKHR", "Unable to acquire the next image during ending the frame update.");
+		return;
 	}
 
 	vkWaitForFences(gpu->logic_dev, 1, &frame->fence, VK_TRUE, UINT64_MAX);
@@ -712,7 +715,8 @@ void gpuEndFrameUpdate(gpu_t* gpu) {
 
 	result = vkQueueSubmit(gpu->queue, 1, &submit_info, frame->fence);
 	if (result != VK_SUCCESS) {
-		return gpuError(gpu, "vkQueueSubmit", "Unable to submit the queue when ending a frame update.");
+		gpuError(gpu, "vkQueueSubmit", "Unable to submit the queue when ending a frame update.");
+		return;
 	}
 
 	VkPresentInfoKHR present_info = {
@@ -725,7 +729,8 @@ void gpuEndFrameUpdate(gpu_t* gpu) {
 	};
 	result = vkQueuePresentKHR(gpu->queue, &present_info);
 	if (result != VK_SUCCESS) {
-		return gpuError(gpu, "vkQueuePresentKHR", "Unable to present the queue when ending a frame update.");
+		gpuError(gpu, "vkQueuePresentKHR", "Unable to present the queue when ending a frame update.");
+		return;
 	}
 }
 
@@ -962,7 +967,7 @@ void gpuDestroyUniformBuffer(gpu_t* gpu, gpu_uniform_buffer_t* ub) {
 		if (ub->dev_mem)
 			vkFreeMemory(gpu->logic_dev, ub->dev_mem, NULL);
 
-		heapFree(gpu, ub);
+		heapFree(gpu->heap, ub);
 	}
 }
 
@@ -1026,24 +1031,24 @@ gpu_mesh_t* gpuCreateMesh(gpu_t* gpu, gpu_mesh_info_t* mesh_info) {
 		.size = mesh_info->idx_data_size,
 		.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT
 	};
-	VkResult vk_result = vkCreateBuffer(gpu->logic_dev, &idx_buffer_info, NULL, &mesh->idx_buff);
+	vk_result = vkCreateBuffer(gpu->logic_dev, &idx_buffer_info, NULL, &mesh->idx_buff);
 	if (vk_result != VK_SUCCESS) {
 		return gpuError(gpu, "vkCreateBuffer", "Unable to create the index buffer for a mesh.");
 	}
 
-	VkMemoryRequirements mem_req;
-	vkGetBufferMemoryRequirements(gpu->logic_dev, mesh->idx_buff, &mem_req);
-	VkMemoryAllocateInfo mem_alloc = {
+	VkMemoryRequirements mem_req_index;
+	vkGetBufferMemoryRequirements(gpu->logic_dev, mesh->idx_buff, &mem_req_index);
+	VkMemoryAllocateInfo mem_alloc_index = {
 		.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-		.allocationSize = mem_req.size,
-		.memoryTypeIndex = gpuGetMemoryTypeIndex(gpu, mem_req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+		.allocationSize = mem_req_index.size,
+		.memoryTypeIndex = gpuGetMemoryTypeIndex(gpu, mem_req_index.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
 	};
-	vk_result = vkAllocateMemory(gpu->logic_dev, &mem_alloc, NULL, &mesh->idx_mem);
+	vk_result = vkAllocateMemory(gpu->logic_dev, &mem_alloc_index, NULL, &mesh->idx_mem);
 	if (vk_result != VK_SUCCESS) {
 		return gpuError(gpu, "vkAllocateMemory", "Unable to allocate memory for an index (during mesh).");
 	}
-	void* mem_dest = 0;
-	vk_result = vkMapMemory(gpu->logic_dev, mesh->idx_mem, 0, mem_alloc.allocationSize, 0, &mem_dest);
+	mem_dest = 0;
+	vk_result = vkMapMemory(gpu->logic_dev, mesh->idx_mem, 0, mem_alloc_index.allocationSize, 0, &mem_dest);
 	if (vk_result != VK_SUCCESS) {
 		return gpuError(gpu, "vkMapMemory", "Unable to map memory");
 	}
@@ -1125,13 +1130,13 @@ static void gpuCreateMeshLayouts(gpu_t* gpu) {
 		.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
 	};
 
-	VkVertexInputBindingDescription* vertex_binding = heapAlloc(gpu->heap, sizeof(VkVertexInputBindingDescription), 0);
-	vertex_binding->binding = 0;
-	vertex_binding->stride = 12;
-	vertex_binding->inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+	VkVertexInputBindingDescription* vertex_binding_p444_i2 = heapAlloc(gpu->heap, sizeof(VkVertexInputBindingDescription), 0);
+	vertex_binding_p444_i2->binding = 0;
+	vertex_binding_p444_i2->stride = 12;
+	vertex_binding_p444_i2->inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
-	VkVertexInputAttributeDescription* vertex_attributes = heapAlloc(gpu->heap, sizeof(VkVertexInputAttributeDescription), 8);
-	vertex_attributes[0] = (VkVertexInputAttributeDescription) {
+	VkVertexInputAttributeDescription* vertex_attributes_p444_i2 = heapAlloc(gpu->heap, sizeof(VkVertexInputAttributeDescription), 8);
+	vertex_attributes_p444_i2[0] = (VkVertexInputAttributeDescription) {
 		.binding = 0,
 		.location = 0,
 		.format = VK_FORMAT_R32G32B32_SFLOAT,
@@ -1141,9 +1146,9 @@ static void gpuCreateMeshLayouts(gpu_t* gpu) {
 	gpu->mesh_vtx_input_info[GPU_MESH_LAYOUT_TRI_P444_I2] = (VkPipelineVertexInputStateCreateInfo) {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
 		.vertexBindingDescriptionCount = 1,
-		.pVertexBindingDescriptions = vertex_binding,
+		.pVertexBindingDescriptions = vertex_binding_p444_i2,
 		.vertexAttributeDescriptionCount = 1,
-		.pVertexAttributeDescriptions = vertex_attributes,
+		.pVertexAttributeDescriptions = vertex_attributes_p444_i2,
 	};
 
 	gpu->mesh_idx_type[GPU_MESH_LAYOUT_TRI_P444_I2] = VK_INDEX_TYPE_UINT16;
@@ -1159,19 +1164,19 @@ static void gpuCreateMeshLayouts(gpu_t* gpu) {
 		.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
 	};
 
-	VkVertexInputBindingDescription* vertex_binding = heapAlloc(gpu->heap, sizeof(VkVertexInputBindingDescription), 0);
-	vertex_binding->binding = 0;
-	vertex_binding->stride = 24;
-	vertex_binding->inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+	VkVertexInputBindingDescription* vertex_binding_p444_c444_i2 = heapAlloc(gpu->heap, sizeof(VkVertexInputBindingDescription), 0);
+	vertex_binding_p444_c444_i2->binding = 0;
+	vertex_binding_p444_c444_i2->stride = 24;
+	vertex_binding_p444_c444_i2->inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
 
-	VkVertexInputAttributeDescription* vertex_attributes = heapAlloc(gpu->heap, 2 * sizeof(VkVertexInputAttributeDescription), 8);
-	vertex_attributes[0] = (VkVertexInputAttributeDescription){
+	VkVertexInputAttributeDescription* vertex_attributes_p444_c444_i2 = heapAlloc(gpu->heap, 2 * sizeof(VkVertexInputAttributeDescription), 8);
+	vertex_attributes_p444_c444_i2[0] = (VkVertexInputAttributeDescription){
 		.binding = 0,
 		.location = 0,
 		.format = VK_FORMAT_R32G32B32_SFLOAT,
 		.offset = 0,
 	};
-	vertex_attributes[1] = (VkVertexInputAttributeDescription){
+	vertex_attributes_p444_c444_i2[1] = (VkVertexInputAttributeDescription){
 		.binding = 0,
 		.location = 1,
 		.format = VK_FORMAT_R32G32B32_SFLOAT,
@@ -1181,9 +1186,9 @@ static void gpuCreateMeshLayouts(gpu_t* gpu) {
 	gpu->mesh_vtx_input_info[GPU_MESH_LAYOUT_TRI_P444_C444_I2] = (VkPipelineVertexInputStateCreateInfo){
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
 		.vertexBindingDescriptionCount = 1,
-		.pVertexBindingDescriptions = vertex_binding,
+		.pVertexBindingDescriptions = vertex_binding_p444_c444_i2,
 		.vertexAttributeDescriptionCount = 2,
-		.pVertexAttributeDescriptions = vertex_attributes,
+		.pVertexAttributeDescriptions = vertex_attributes_p444_c444_i2,
 	};
 
 	gpu->mesh_idx_type[GPU_MESH_LAYOUT_TRI_P444_C444_I2] = VK_INDEX_TYPE_UINT16;
@@ -1282,4 +1287,3 @@ void* gpuError(gpu_t* gpu, const char* fn_name, const char* reason) {
 	gpuDestroy(gpu);
 	return NULL;
 }
-

@@ -89,26 +89,26 @@ renderer_t* rendererCreate(heap_t* heap, wm_window_t* window) {
 }
 
 void rendererDestroy(renderer_t* render) {
-	queue_push(render->queue, NULL);
-	thread_destroy(render->thread);
-	queue_destroy(render->queue);
-	heap_free(render->heap, render);
+	dequePushBack(render->queue, NULL);
+	threadDestroy(render->thread);
+	dequeDestroy(render->queue);
+	heapFree(render->heap, render);
 }
 
 void rendererModelAdd(renderer_t* render, ecs_entity_t* entity, gpu_mesh_info_t* mesh, gpu_shader_info_t* shader, gpu_uniform_buffer_info_t* uniform) {
-	command_model_t* command = heap_alloc(render->heap, sizeof(command_model_t), 8);
+	command_model_t* command = heapAlloc(render->heap, sizeof(command_model_t), 8);
 	command->type = RENDERER_COMMAND_DRAW_MODEL;
 	command->entity = *entity;
 	command->mesh = mesh;
 	command->shader = shader;
 	command->uniform_buffer.size = uniform->size;
-	command->uniform_buffer.data = heap_alloc(render->heap, uniform->size, 8);
+	command->uniform_buffer.data = heapAlloc(render->heap, uniform->size, 8);
 	memcpy(command->uniform_buffer.data, uniform->data, uniform->size);
 	dequePushBack(render->queue, command);
 }
 
 void rendererFrameDone(renderer_t* render) {
-	command_frame_done_t* command = heap_alloc(render->heap, sizeof(command_frame_done_t), 8);
+	command_frame_done_t* command = heapAlloc(render->heap, sizeof(command_frame_done_t), 8);
 	command->type = RENDERER_COMMAND_FRAME_COMPLETE;
 	dequePushBack(render->queue, command);
 }
@@ -148,7 +148,7 @@ static int rendererThreadFunc(void* ID) {
 				heapFree(render->heap, model->uniform_buffer.data);
 
 				if (p_pipeline != shader->pipeline) {
-					gpuCommandBindPipeline(render->gpu, shader->pipeline);
+					gpuCommandBindPipeline(cmd_buff, shader->pipeline);
 					p_pipeline = shader->pipeline;
 				}
 				if (p_mesh != mesh->mesh) {

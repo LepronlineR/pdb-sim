@@ -10,10 +10,10 @@ quatf_t quatfMul(quatf_t a, quatf_t b) {
     quatf_t result;
 
     result.v3 = vec3fCross(a.v3, b.v3);
-    result.v3 = vec3fAdd(result.v3, vec3fScale(b.v3, a.s));
-    result.v3 = vec3fAdd(result.v3, vec3fScale(a.v3, b.s));
+    result.v3 = vec3fAdd(result.v3, vec3fScale(b.v3, a.w));
+    result.v3 = vec3fAdd(result.v3, vec3fScale(a.v3, b.w));
 
-    result.s = (a.s * b.s) - vec3fDot(a.v3, b.v3);
+    result.w = (a.w * b.w) - vec3fDot(a.v3, b.v3);
 
     return result;
 }
@@ -21,7 +21,7 @@ quatf_t quatfMul(quatf_t a, quatf_t b) {
 quatf_t quatfConjugate(quatf_t q) {
     quatf_t result;
     result.v3 = vec3fNeg(q.v3);
-    result.s = q.s;
+    result.w = q.w;
     return result;
 }
 

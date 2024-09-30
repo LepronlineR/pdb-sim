@@ -65,15 +65,6 @@ typedef struct gpu_mesh_info_t {
 	size_t idx_data_size;
 } gpu_mesh_info_t;
 
-// SHADERS
-typedef struct gpu_shader_info_t {
-	void* vtx_shader_data;
-	void* frag_shader_data;
-	size_t vtx_shader_size;
-	size_t frag_shader_size;
-	int uniform_buffer_count;
-} gpu_shader_info_t;
-
 // others
 typedef struct heap_t heap_t;
 typedef struct wm_window_t wm_window_t;

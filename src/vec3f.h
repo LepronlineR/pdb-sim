@@ -85,7 +85,7 @@ __forceinline vec3f_t vec3fScale3f(vec3f_t a, float fx, float fy, float fz) { re
 
 // Vector Lerp: Lerp(a, b, f)
 //  
-__forceinline vec3f_t vec3fMax(vec3f_t a, vec3f_t b, float f) { 
+__forceinline vec3f_t vec3fLerp(vec3f_t a, vec3f_t b, float f) { 
     return (vec3f_t) { 
         .x = lerpf(a.x, b.x, f), 
         .y = lerpf(a.y, b.y, f),
@@ -100,7 +100,7 @@ __forceinline float vec3fMagnitudeSqrd(vec3f_t v) { return v.x * v.x + v.y * v.y
 
 // Magnitude of Vector: |AB| --> sqrt(x^2 + y^2 + z^2)
 //  
-__forceinline float vec3fMagnitude(vec3f_t v) { return sqrtf(vec3fMagnitudeSqr(v)); }
+__forceinline float vec3fMagnitude(vec3f_t v) { return sqrtf(vec3fMagnitudeSqrd(v)); }
 
 // Euclidian Distance Between Two Vectors Squared: dist(A, B) --> (x_b-x_a)^2 + (y_b-y_a)^2 + (z_b-z_a)^2
 //  
@@ -113,7 +113,7 @@ __forceinline float vec3fDistanceSqrd(vec3f_t a, vec3f_t b) {
 
 // Euclidian Distance Between Two Vectors: sqrt(dist(A,B))
 //  
-__forceinline float vec3fDistance(vec3f_t a, vec3f_t b) { sqrtf(vec3fDistanceSqrd(a, b)); }
+__forceinline float vec3fDistance(vec3f_t a, vec3f_t b) { return sqrtf(vec3fDistanceSqrd(a, b)); }
 
 // Normalize the Vector
 //  
@@ -135,10 +135,6 @@ __forceinline vec3f_t vec3fCross(vec3f_t a, vec3f_t b) { return (vec3f_t) {
     .y = (a.z * b.x) - (a.x * b.z), 
     .z = (a.x * b.y) - (a.y * b.x) }; 
 }
-
-// Cross Product Between Two Vectors A x B
-//
-__forceinline float vec3fDot(vec3f_t a, vec3f_t b) { return (a.x * b.x) + (a.y * b.y) + (a.z * b.z); }
 
 // Reflection Vector (r = d - 2 (d dot n) n)
 // 
