@@ -7,7 +7,13 @@ void transformIdentity(transform_t* transform) {
 }
 
 void transformConvertToMatrix(const transform_t* transform, mat4f_t* m) {
-	// TODO LATER
+	mat4f_t rotation;
+	mat4fMakeRotation(&rotation, &transform->rotation);
+	mat4fMakeScaling(m, &transform->scale);
+	mat4fMulInplace(m, &rotation);
+	m->mat[0][3] = transform->translation.x;
+	m->mat[1][3] = transform->translation.y;
+	m->mat[2][3] = transform->translation.z;
 }
 
 void transformMul(const transform_t* a, transform_t* b) {

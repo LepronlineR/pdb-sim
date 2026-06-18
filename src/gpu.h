@@ -59,6 +59,7 @@ typedef struct gpu_uniform_buffer_info_t {
 // MESH
 typedef struct gpu_mesh_info_t {
 	gpu_mesh_layout_t layout;
+	bool dynamic;
 	void* vtx_data;
 	void* idx_data;
 	size_t vtx_data_size;
@@ -95,6 +96,7 @@ void gpuUpdateUniformBuffer(gpu_t* gpu, gpu_uniform_buffer_t* ub, const void* da
 void gpuDestroyUniformBuffer(gpu_t* gpu, gpu_uniform_buffer_t* ub);
 
 gpu_mesh_t* gpuCreateMesh(gpu_t* gpu, gpu_mesh_info_t* mesh_info);
+void gpuUpdateMeshVertices(gpu_t* gpu, gpu_mesh_t* mesh, const void* data, size_t size);
 void gpuDestroyMesh(gpu_t* gpu, gpu_mesh_t* mesh);
 void gpuCommandBindMesh(gpu_t* gpu, gpu_cmd_buff_t* cmd_buff, gpu_mesh_t* mesh);
 
@@ -106,4 +108,17 @@ void gpuCommandDraw(gpu_t* gpu, gpu_cmd_buff_t* cmd_buff);
 void gpuQueueWaitIdle(gpu_t* gpu);
 
 uint32_t gpuGetFrameCount(gpu_t* gpu);
+VkInstance gpuGetInstance(gpu_t* gpu);
+VkPhysicalDevice gpuGetPhysicalDevice(gpu_t* gpu);
+VkDevice gpuGetDevice(gpu_t* gpu);
+VkQueue gpuGetQueue(gpu_t* gpu);
+uint32_t gpuGetQueueFamilyIndex(gpu_t* gpu);
+VkRenderPass gpuGetRenderPass(gpu_t* gpu);
+uint32_t gpuGetSwapchainImageCount(gpu_t* gpu);
+uint32_t gpuGetMinimumImageCount(gpu_t* gpu);
+VkCommandBuffer gpuGetCommandBuffer(gpu_cmd_buff_t* command_buffer);
+uint32_t gpuGetMemoryTypeIndex(gpu_t* gpu, uint32_t bits,
+	VkMemoryPropertyFlags property_flags);
+void gpuCreateMeshLayouts(gpu_t* gpu);
+void gpuDestroyMeshLayouts(gpu_t* gpu);
 #endif

@@ -37,19 +37,19 @@ void mat4fMakeScaling(mat4f_t* m, vec3f_t* v) {
 }
 
 void mat4fMakeRotation(mat4f_t* m, const quatf_t* q) {
-	m->mat[0][0] = 1.0f - 2.0f * (q->y * q->y - q->z * q->z);
+	m->mat[0][0] = 1.0f - 2.0f * (q->y * q->y + q->z * q->z);
 	m->mat[0][1] = 2.0f * (q->x * q->y - q->s * q->z);
 	m->mat[0][2] = 2.0f * (q->x * q->z + q->s * q->y);
 	m->mat[0][3] = 0.0f;
 	
 	m->mat[1][0] = 2.0f * (q->x * q->y + q->s * q->z);
-	m->mat[1][1] = 1.0f - 2.0f * (q->x * q->x - q->z * q->z);
-	m->mat[1][2] = 2.0f * (q->y * q->z + q->s * q->x);
+	m->mat[1][1] = 1.0f - 2.0f * (q->x * q->x + q->z * q->z);
+	m->mat[1][2] = 2.0f * (q->y * q->z - q->s * q->x);
 	m->mat[1][3] = 0.0f;
 
 	m->mat[2][0] = 2.0f * (q->x * q->z - q->s * q->y);
 	m->mat[2][1] = 2.0f * (q->y * q->z + q->s * q->x);
-	m->mat[2][2] = 1.0f - 2.0f * (q->x * q->x - q->y * q->y);
+	m->mat[2][2] = 1.0f - 2.0f * (q->x * q->x + q->y * q->y);
 	m->mat[2][3] = 0.0f;
 
 	m->mat[3][0] = 0.0f;
@@ -63,7 +63,7 @@ void mat4fMul(mat4f_t* res, const mat4f_t* a, const mat4f_t* b) {
 	for (unsigned int x = 0; x < 4; x++) {
 		for (unsigned int y = 0; y < 4; y++) {
 			for (unsigned int z = 0; z < 4; z++) {
-				temp += a->mat[x][z] + b->mat[z][y];
+				temp += a->mat[x][z] * b->mat[z][y];
 			}
 			res->mat[x][y] = temp;
 			temp = 0.0f;
@@ -182,6 +182,7 @@ void mat4fMakePerspective(mat4f_t* m, float angle, float aspect, float z_near, f
 		debugPrint(DEBUG_PRINT_ERROR, "MAT4 Make Perspective: angle is 0 or less than 0!\n");
 	}
 
+	mat4fZero(m);
 	aspect = __max(FLT_EPSILON, aspect);
 	z_far = __max(FLT_EPSILON, z_far);
 
@@ -189,10 +190,10 @@ void mat4fMakePerspective(mat4f_t* m, float angle, float aspect, float z_near, f
 	float fov = tanf(angle * 0.5f);
 	float inv_fov = 1.0f / fov;
 
-	m->mat[0][0] = aspect * inv_fov;
-	m->mat[1][1] = inv_fov;
-	m->mat[2][2] = -(z_far + z_near) / (z_far - z_near);
-	m->mat[2][3] = -(2.0f * z_far + z_near) / (z_far - z_near);
+	m->mat[0][0] = inv_fov / aspect;
+	m->mat[1][1] = -inv_fov;
+	m->mat[2][2] = z_far / (z_near - z_far);
+	m->mat[2][3] = (z_far * z_near) / (z_near - z_far);
 	m->mat[3][2] = -1.0f;
 }
 
@@ -202,22 +203,22 @@ void mat4fMakeLookAt(mat4f_t* m, const vec3f_t* eye, const vec3f_t* center, cons
 	vec3f_t y_axis = vec3fCross(z_axis, x_axis);
 
 	m->mat[0][0] = x_axis.x;
-	m->mat[1][0] = x_axis.y;
-	m->mat[2][0] = x_axis.z;
-	m->mat[3][0] = vec3fDot(x_axis, *eye);
+	m->mat[0][1] = x_axis.y;
+	m->mat[0][2] = x_axis.z;
+	m->mat[0][3] = -vec3fDot(x_axis, *eye);
 
-	m->mat[0][1] = y_axis.x;
+	m->mat[1][0] = y_axis.x;
 	m->mat[1][1] = y_axis.y;
-	m->mat[2][1] = y_axis.z;
-	m->mat[3][1] = vec3fDot(y_axis, *eye);
+	m->mat[1][2] = y_axis.z;
+	m->mat[1][3] = -vec3fDot(y_axis, *eye);
 
-	m->mat[0][2] = z_axis.x;
-	m->mat[1][2] = z_axis.y;
+	m->mat[2][0] = z_axis.x;
+	m->mat[2][1] = z_axis.y;
 	m->mat[2][2] = z_axis.z;
-	m->mat[3][2] = vec3fDot(z_axis, *eye);
+	m->mat[2][3] = -vec3fDot(z_axis, *eye);
 
-	m->mat[0][3] = 0.0f;
-	m->mat[1][3] = 0.0f;
-	m->mat[2][3] = 0.0f;
+	m->mat[3][0] = 0.0f;
+	m->mat[3][1] = 0.0f;
+	m->mat[3][2] = 0.0f;
 	m->mat[3][3] = 1.0f;
 }

@@ -43,13 +43,18 @@ typedef struct gpu_mesh_t {
 	VkBuffer vtx_buff;
 	VkDeviceMemory vtx_mem;
 	int vtx_count;
+	size_t vtx_data_size;
 } gpu_mesh_t;
 
 typedef struct gpu_frame_t {
 	VkImage img;
 	VkImageView view;
 	VkFramebuffer frame_buff;
+	VkImage depth_img;
+	VkDeviceMemory depth_mem;
+	VkImageView depth_view;
 	VkFence fence;
+	VkSemaphore render_finished;
 	gpu_cmd_buff_t* cmd_buff;
 } gpu_frame_t;
 
@@ -59,22 +64,20 @@ typedef struct gpu_t {
 	VkDevice logic_dev;
 	VkPhysicalDeviceMemoryProperties mem_prop;
 	VkQueue queue;
+	uint32_t queue_family_index;
 	VkSurfaceKHR surface;
 	VkSwapchainKHR swap_chain;
 
 	VkRenderPass render_pass;
-	VkImage depth_stencil_img;
-	VkDeviceMemory depth_stencil_mem;
-	VkImageView depth_stencil_view;
 
 	VkCommandPool cmd_pool;
 	VkDescriptorPool desc_pool;
 
 	VkSemaphore present_comp_sem;
-	VkSemaphore render_comp_sem;
 
 	uint32_t frame_width;
 	uint32_t frame_height;
+	uint32_t minimum_image_count;
 
 	VkPipelineInputAssemblyStateCreateInfo mesh_input_asm_info[GPU_MESH_LAYOUT_COUNT];
 	VkPipelineVertexInputStateCreateInfo mesh_vtx_input_info[GPU_MESH_LAYOUT_COUNT];
@@ -85,13 +88,10 @@ typedef struct gpu_t {
 	gpu_frame_t* frames;
 	uint32_t frame_count;
 	uint32_t frame_idx;
+	uint32_t active_image_idx;
 
 	heap_t* heap;
 } gpu_t;
-
-static uint32_t gpuGetMemoryTypeIndex(gpu_t* gpu, uint32_t bits, VkMemoryPropertyFlags property_flags);
-static void gpuCreateMeshLayouts(gpu_t* gpu);
-static void gpuDestroyMeshLayouts(gpu_t* gpu);
 
 //  --------------------------------------------------------------------------
 //								INIT/DESTROY GPU
@@ -140,6 +140,18 @@ gpu_t* gpuCreate(heap_t* heap, wm_window_t* window) {
 		return gpuError(gpu, "VkCreateInstance", "Create instance failed.");
 	}
 
+	/* Presentation support is surface-specific, so create the surface before
+	   selecting a physical device and queue family. */
+	VkWin32SurfaceCreateInfoKHR win_surface_info = {
+		.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR,
+		.hinstance = GetModuleHandle(NULL),
+		.hwnd = wmGetHWND(window)
+	};
+	vk_result = vkCreateWin32SurfaceKHR(gpu->inst, &win_surface_info, NULL, &gpu->surface);
+	if (vk_result != VK_SUCCESS) {
+		return gpuError(gpu, "vkCreateWin32SurfaceKHR", "Unable to create window surface.");
+	}
+
 	//
 	// ================== Look for physical devices ==================
 	//
@@ -160,54 +172,42 @@ gpu_t* gpuCreate(heap_t* heap, wm_window_t* window) {
 	if (vk_result != VK_SUCCESS) {
 		return gpuError(gpu, "vkEnumeratePhysicalDevices", "Function unexpectedly failed.");
 	}
-	// TODO: advanced search of a suitable device (https://vulkan-tutorial.com/Drawing_a_triangle/Setup/Physical_devices_and_queue_families)
-	physical_device = phys_devices[0];
-	heapFree(heap, phys_devices);
-	gpu->phys_dev = physical_device;
-	
-	//
-	// ================== Find queue families ==================
-	//
-	
 	uint32_t queue_family_count = 0;
 	uint32_t queue_family_idx = UINT32_MAX;
-	uint32_t queue_count = UINT32_MAX;
-	vkGetPhysicalDeviceQueueFamilyProperties(gpu->phys_dev, &queue_family_count, NULL);
-
-	if(queue_family_count == 0){
-		return gpuError(gpu, "vkGetPhysicalDeviceQueueFamilyProperties", "Unable to find a family.");
-	}
-
-	VkQueueFamilyProperties* queue_family = heapAlloc(heap, sizeof(VkQueueFamilyProperties) * queue_family_count, 0);
-	vkGetPhysicalDeviceQueueFamilyProperties(gpu->phys_dev, &queue_family_count, queue_family);
-
-	for (uint32_t x = 0; x < queue_family_count; x++) {
-		if (queue_family[x].queueCount > 0 &&
-			queue_family[x].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
-
-			queue_family_idx = x;
-			queue_count = queue_family[x].queueCount;
-			break;
+	for (uint32_t device_idx = 0; device_idx < device_count && physical_device == VK_NULL_HANDLE; ++device_idx) {
+		vkGetPhysicalDeviceQueueFamilyProperties(phys_devices[device_idx], &queue_family_count, NULL);
+		VkQueueFamilyProperties* queue_family = heapAlloc(heap, sizeof(*queue_family) * queue_family_count, 8);
+		vkGetPhysicalDeviceQueueFamilyProperties(phys_devices[device_idx], &queue_family_count, queue_family);
+		for (uint32_t family_idx = 0; family_idx < queue_family_count; ++family_idx) {
+			VkBool32 present_supported = VK_FALSE;
+			vkGetPhysicalDeviceSurfaceSupportKHR(phys_devices[device_idx], family_idx, gpu->surface, &present_supported);
+			if (queue_family[family_idx].queueCount > 0 &&
+				(queue_family[family_idx].queueFlags & VK_QUEUE_GRAPHICS_BIT) && present_supported) {
+				physical_device = phys_devices[device_idx];
+				queue_family_idx = family_idx;
+				break;
+			}
 		}
+		heapFree(heap, queue_family);
 	}
-
-	heapFree(heap, queue_family);
-
-	if (queue_family_idx == UINT32_MAX || queue_count == UINT32_MAX) {
-		return gpuError(gpu, "queueCount, queueFlags", "Unable to find a device with a graphics queue.");
+	heapFree(heap, phys_devices);
+	if (physical_device == VK_NULL_HANDLE) {
+		return gpuError(gpu, "vkGetPhysicalDeviceSurfaceSupportKHR", "No graphics queue can present to this window.");
 	}
+	gpu->phys_dev = physical_device;
+	gpu->queue_family_index = queue_family_idx;
 
 	//
 	// ================== Specifying queues to be created ==================
 	//
 
-	float* queue_priorities = _alloca(sizeof(float) * queue_count);
+	float queue_priority = 1.0f;
 
 	VkDeviceQueueCreateInfo queue_info = {
 		.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO,
 		.queueFamilyIndex = queue_family_idx,
-		.queueCount = queue_count,
-		.pQueuePriorities = queue_priorities
+		.queueCount = 1,
+		.pQueuePriorities = &queue_priority
 	};
 
 	const char* device_extensions[] = {
@@ -236,21 +236,6 @@ gpu_t* gpuCreate(heap_t* heap, wm_window_t* window) {
 	// Retrieving queue handles
 	vkGetDeviceQueue(gpu->logic_dev, queue_family_idx, 0, &gpu->queue);
 
-	//
-	// ================== Creating a window surface for rendering ==================
-	//
-
-	VkWin32SurfaceCreateInfoKHR win_surface_info = {
-		.sType = VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR,
-		.hinstance = GetModuleHandle(NULL),
-		.hwnd = wmGetHWND(window)
-	};
-
-	vk_result = vkCreateWin32SurfaceKHR(gpu->inst, &win_surface_info, NULL, &gpu->surface);
-	if (vk_result) {
-		return gpuError(gpu, "vkCreateWin32SurfaceKHR", "Unable to create window surface.");
-	}
-
 	VkSurfaceCapabilitiesKHR surface_cap;
 	vk_result = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(gpu->phys_dev, gpu->surface, &surface_cap);
 	if (vk_result) {
@@ -260,22 +245,27 @@ gpu_t* gpuCreate(heap_t* heap, wm_window_t* window) {
 	// set frame window
 	gpu->frame_width = surface_cap.currentExtent.width;
 	gpu->frame_height = surface_cap.currentExtent.height;
+	gpu->minimum_image_count = surface_cap.minImageCount;
 
 	//
 	// ================== Creating a swapchain ==================
 	//
 
+	uint32_t image_count = surface_cap.minImageCount + 1;
+	if (surface_cap.maxImageCount > 0 && image_count > surface_cap.maxImageCount) {
+		image_count = surface_cap.maxImageCount;
+	}
 	VkSwapchainCreateInfoKHR swapchain_info = {
 		.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR,
 		.surface = gpu->surface,
-		.minImageCount = __max(surface_cap.minImageCount + 1, 3),
+		.minImageCount = image_count,
 		.imageFormat = VK_FORMAT_B8G8R8A8_SRGB,
 		.imageColorSpace = VK_COLOR_SPACE_SRGB_NONLINEAR_KHR,
 		.imageExtent = surface_cap.currentExtent,
 		.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
 		.preTransform = surface_cap.currentTransform,
 		.imageArrayLayers = 1,
-		.imageSharingMode = VK_PRESENT_MODE_FIFO_KHR,
+		.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
 		.presentMode = VK_PRESENT_MODE_FIFO_KHR,
 		.clipped = VK_TRUE,
 		.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR
@@ -338,7 +328,7 @@ gpu_t* gpuCreate(heap_t* heap, wm_window_t* window) {
 		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
 		.imageType = VK_IMAGE_TYPE_2D,
 		.format = VK_FORMAT_D32_SFLOAT,
-		.extent = { surface_cap.currentExtent.width, surface_cap.currentExtent.height },
+		.extent = { surface_cap.currentExtent.width, surface_cap.currentExtent.height, 1 },
 		.mipLevels = 1,
 		.arrayLayers = 1,
 		.samples = VK_SAMPLE_COUNT_1_BIT,
@@ -347,40 +337,42 @@ gpu_t* gpuCreate(heap_t* heap, wm_window_t* window) {
 		.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED
 	};
 
-	vk_result = vkCreateImage(gpu->logic_dev, &depth_image_info, NULL, &gpu->depth_stencil_img);
-	if (vk_result != VK_SUCCESS) {
-		return gpuError(gpu, "vkCreateImage", "Unable to create the the depth buffer image.");
-	}
+	for (uint32_t x = 0; x < gpu->frame_count; ++x) {
+		gpu_frame_t* frame = &gpu->frames[x];
+		vk_result = vkCreateImage(gpu->logic_dev, &depth_image_info, NULL, &frame->depth_img);
+		if (vk_result != VK_SUCCESS) {
+			return gpuError(gpu, "vkCreateImage", "Unable to create a depth image.");
+		}
 
-	VkMemoryRequirements depth_mem_reqs;
-	vkGetImageMemoryRequirements(gpu->logic_dev, gpu->depth_stencil_img, &depth_mem_reqs);
+		VkMemoryRequirements depth_mem_reqs;
+		vkGetImageMemoryRequirements(gpu->logic_dev, frame->depth_img, &depth_mem_reqs);
+		VkMemoryAllocateInfo depth_alloc_info = {
+			.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+			.allocationSize = depth_mem_reqs.size,
+			.memoryTypeIndex = gpuGetMemoryTypeIndex(gpu, depth_mem_reqs.memoryTypeBits,
+				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+		};
+		vk_result = vkAllocateMemory(gpu->logic_dev, &depth_alloc_info, NULL, &frame->depth_mem);
+		if (vk_result != VK_SUCCESS ||
+			vkBindImageMemory(gpu->logic_dev, frame->depth_img, frame->depth_mem, 0) != VK_SUCCESS) {
+			return gpuError(gpu, "depth memory", "Unable to allocate or bind depth memory.");
+		}
 
-	VkMemoryAllocateInfo depth_alloc_info = {
-		.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-		.allocationSize = depth_mem_reqs.size,
-		.memoryTypeIndex = gpuGetMemoryTypeIndex(gpu, depth_mem_reqs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
-	};
-	vk_result = vkAllocateMemory(gpu->logic_dev, &depth_alloc_info, NULL, &gpu->depth_stencil_mem);
-	if (vk_result != VK_SUCCESS) {
-		return gpuError(gpu, "vkAllocateMemory", "Unable to allocate memory through the depth buffer.");
-	}
-
-	vk_result = vkBindImageMemory(gpu->logic_dev, gpu->depth_stencil_img, gpu->depth_stencil_mem, 0);
-	if (vk_result != VK_SUCCESS) {
-		return gpuError(gpu, "vkBindImageMemory", "Unable to bind the image memory to the depth stencil image.");
-	}
-
-	VkImageViewCreateInfo depth_view_info = {
-		.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-		.viewType = VK_IMAGE_VIEW_TYPE_2D,
-		.format = VK_FORMAT_D32_SFLOAT,
-		.subresourceRange = {.levelCount = 1, .layerCount = 1},
-		.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
-		.image = gpu->depth_stencil_img
-	};
-	vk_result = vkCreateImageView(gpu->logic_dev, &depth_view_info, NULL, &gpu->depth_stencil_view);
-	if (vk_result != VK_SUCCESS) {
-		return gpuError(gpu, "vkCreateImageView", "Unable to create the image view for the depth buffer.");
+		VkImageViewCreateInfo depth_view_info = {
+			.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+			.viewType = VK_IMAGE_VIEW_TYPE_2D,
+			.format = VK_FORMAT_D32_SFLOAT,
+			.subresourceRange = {
+				.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+				.levelCount = 1,
+				.layerCount = 1
+			},
+			.image = frame->depth_img
+		};
+		vk_result = vkCreateImageView(gpu->logic_dev, &depth_view_info, NULL, &frame->depth_view);
+		if (vk_result != VK_SUCCESS) {
+			return gpuError(gpu, "vkCreateImageView", "Unable to create a depth image view.");
+		}
 	}
 
 	//
@@ -431,18 +423,23 @@ gpu_t* gpuCreate(heap_t* heap, wm_window_t* window) {
 		{
 			.srcSubpass = VK_SUBPASS_EXTERNAL,
 			.dstSubpass = 0,
-			.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-			.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+			.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+				VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+			.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+				VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
 			.srcAccessMask = 0,
-			.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+			.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+				VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
 			.dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT,
 		},
 		{
 			.srcSubpass = 0,
 			.dstSubpass = VK_SUBPASS_EXTERNAL,
-			.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+			.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+				VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
 			.dstStageMask = VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-			.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+			.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+				VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
 			.dstAccessMask = 0,
 			.dependencyFlags = VK_DEPENDENCY_BY_REGION_BIT,
 		},
@@ -469,7 +466,7 @@ gpu_t* gpuCreate(heap_t* heap, wm_window_t* window) {
 	for (uint32_t x = 0; x < gpu->frame_count; x++) {
 		VkImageView view_buffer_attachments[2] = {
 			gpu->frames[x].view,
-			gpu->depth_stencil_view
+			gpu->frames[x].depth_view
 		};
 
 		VkFramebufferCreateInfo frame_buffer_info = {
@@ -498,9 +495,11 @@ gpu_t* gpuCreate(heap_t* heap, wm_window_t* window) {
 	if (vk_result != VK_SUCCESS) {
 		return gpuError(gpu, "vkCreateSemaphore", "Unable to create a semaphore.");
 	}
-	vk_result = vkCreateSemaphore(gpu->logic_dev, &semaphore_info, NULL, &gpu->render_comp_sem);
-	if (vk_result != VK_SUCCESS) {
-		return gpuError(gpu, "vkCreateSemaphore", "Unable to create a semaphore.");
+	for (uint32_t x = 0; x < gpu->frame_count; ++x) {
+		vk_result = vkCreateSemaphore(gpu->logic_dev, &semaphore_info, NULL, &gpu->frames[x].render_finished);
+		if (vk_result != VK_SUCCESS) {
+			return gpuError(gpu, "vkCreateSemaphore", "Unable to create a render-finished semaphore.");
+		}
 	}
 
 	//
@@ -581,35 +580,26 @@ void gpuDestroy(gpu_t* gpu) {
 
 		gpuDestroyMeshLayouts(gpu);
 
-		if (gpu->depth_stencil_img)
-			vkDestroyImage(gpu->logic_dev, gpu->depth_stencil_img, NULL);
-		if (gpu->depth_stencil_view)
-			vkDestroyImageView(gpu->logic_dev, gpu->depth_stencil_view, NULL);
-		if (gpu->depth_stencil_mem)
-			vkFreeMemory(gpu->logic_dev, gpu->depth_stencil_mem, NULL);
-			
-
 		if (gpu->present_comp_sem)
 			vkDestroySemaphore(gpu->logic_dev, gpu->present_comp_sem, NULL);
-		if (gpu->render_comp_sem)
-			vkDestroySemaphore(gpu->logic_dev, gpu->render_comp_sem, NULL);
-
-		if (gpu->swap_chain)
-			vkDestroySwapchainKHR(gpu->logic_dev, gpu->swap_chain, NULL);
-
 		if (gpu->desc_pool)
 			vkDestroyDescriptorPool(gpu->logic_dev, gpu->desc_pool, NULL);
 		
-		if (gpu->cmd_pool)
-			vkDestroyCommandPool(gpu->logic_dev, gpu->cmd_pool, NULL);
-
 		if (gpu->frames) {
 			for (uint32_t x = 0; x < gpu->frame_count; x++) {
 				gpu_frame_t* frame = &gpu->frames[x];
 				if (frame->fence)
 					vkDestroyFence(gpu->logic_dev, frame->fence, NULL);
+				if (frame->render_finished)
+					vkDestroySemaphore(gpu->logic_dev, frame->render_finished, NULL);
 				if (frame->frame_buff)
 					vkDestroyFramebuffer(gpu->logic_dev, frame->frame_buff, NULL);
+				if (frame->depth_view)
+					vkDestroyImageView(gpu->logic_dev, frame->depth_view, NULL);
+				if (frame->depth_img)
+					vkDestroyImage(gpu->logic_dev, frame->depth_img, NULL);
+				if (frame->depth_mem)
+					vkFreeMemory(gpu->logic_dev, frame->depth_mem, NULL);
 				if (frame->view)
 					vkDestroyImageView(gpu->logic_dev, frame->view, NULL);
 				if (frame->cmd_buff) {
@@ -617,14 +607,24 @@ void gpuDestroy(gpu_t* gpu) {
 					heapFree(gpu->heap, frame->cmd_buff);
 				}
 			}
-			heapFree(gpu->heap, gpu->frames);
+			 heapFree(gpu->heap, gpu->frames);
 		}
+
+		if (gpu->swap_chain)
+			vkDestroySwapchainKHR(gpu->logic_dev, gpu->swap_chain, NULL);
+
+		if (gpu->cmd_pool)
+			vkDestroyCommandPool(gpu->logic_dev, gpu->cmd_pool, NULL);
+		if (gpu->render_pass)
+			vkDestroyRenderPass(gpu->logic_dev, gpu->render_pass, NULL);
 
 		if (gpu->logic_dev)
 			vkDestroyDevice(gpu->logic_dev, NULL);
 
 		if (gpu->surface)
 			vkDestroySurfaceKHR(gpu->inst, gpu->surface, NULL);
+		if (gpu->inst)
+			vkDestroyInstance(gpu->inst, NULL);
 
 	
 		heapFree(gpu->heap, gpu);
@@ -636,13 +636,23 @@ void gpuDestroy(gpu_t* gpu) {
 // 
 
 gpu_cmd_buff_t* gpuBeginFrameUpdate(gpu_t* gpu) {
-	
-	gpu_frame_t* frame = &gpu->frames[gpu->frame_idx];
+	/* Keep one frame in flight while allowing the swapchain to return any image index. */
+	gpu_frame_t* frame = &gpu->frames[0];
+	vkWaitForFences(gpu->logic_dev, 1, &frame->fence, VK_TRUE, UINT64_MAX);
+
+	VkResult vk_result = vkAcquireNextImageKHR(gpu->logic_dev, gpu->swap_chain,
+		UINT64_MAX, gpu->present_comp_sem, VK_NULL_HANDLE, &gpu->active_image_idx);
+	if (vk_result != VK_SUCCESS && vk_result != VK_SUBOPTIMAL_KHR) {
+		debugPrint(DEBUG_PRINT_ERROR, "vkAcquireNextImageKHR: Unable to acquire the next image.\n");
+		return NULL;
+	}
+
+	vkResetCommandBuffer(frame->cmd_buff->buffer, 0);
 
 	VkCommandBufferBeginInfo command_buff_info = {
 		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO
 	};
-	VkResult vk_result = vkBeginCommandBuffer(frame->cmd_buff->buffer, &command_buff_info);
+	vk_result = vkBeginCommandBuffer(frame->cmd_buff->buffer, &command_buff_info);
 	if (vk_result != VK_SUCCESS) { // NOTE: as long as this works, everything else should be fine
 		return gpuError(gpu, "vkBeginCommandBuffer", "Unable to create a command buffer on begin frame update.");
 	}
@@ -658,7 +668,8 @@ gpu_cmd_buff_t* gpuBeginFrameUpdate(gpu_t* gpu) {
 		.renderArea.extent.height = gpu->frame_height,
 		.renderArea.extent.width = gpu->frame_width,
 		.clearValueCount = _countof(clear_value),
-		.framebuffer = frame->frame_buff
+		.pClearValues = clear_value,
+		.framebuffer = gpu->frames[gpu->active_image_idx].frame_buff
 	};
 
 	vkCmdBeginRenderPass(frame->cmd_buff->buffer, &render_pass_begin_info, VK_SUBPASS_CONTENTS_INLINE);
@@ -681,27 +692,19 @@ gpu_cmd_buff_t* gpuBeginFrameUpdate(gpu_t* gpu) {
 }
 
 void gpuEndFrameUpdate(gpu_t* gpu) {
-	gpu_frame_t* frame = &gpu->frames[gpu->frame_idx];
-	gpu->frame_idx = (gpu->frame_idx + 1) % gpu->frame_count;
+	gpu_frame_t* frame = &gpu->frames[0];
 
 	vkCmdEndRenderPass(frame->cmd_buff->buffer);
 	VkResult result = vkEndCommandBuffer(frame->cmd_buff->buffer);
 	if (result != VK_SUCCESS) {
-		gpuError(gpu, "vkEndCommandBuffer", "Unable to end command buffer during ending the frame update.");
+		debugPrint(DEBUG_PRINT_ERROR, "vkEndCommandBuffer: Unable to end command buffer during ending the frame update.\n");
 		return;
 	}
 
-	uint32_t image_idx;
-	result = vkAcquireNextImageKHR(gpu->logic_dev, gpu->swap_chain, UINT64_MAX, gpu->present_comp_sem, VK_NULL_HANDLE, &image_idx);
-	if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
-		gpuError(gpu, "vkAcquireNextImageKHR", "Unable to acquire the next image during ending the frame update.");
-		return;
-	}
-
-	vkWaitForFences(gpu->logic_dev, 1, &frame->fence, VK_TRUE, UINT64_MAX);
 	vkResetFences(gpu->logic_dev, 1, &frame->fence);
 
 	VkPipelineStageFlags wait_stage_mask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+	VkSemaphore render_finished = gpu->frames[gpu->active_image_idx].render_finished;
 	VkSubmitInfo submit_info = {
 		.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
 		.pWaitDstStageMask = &wait_stage_mask,
@@ -710,12 +713,12 @@ void gpuEndFrameUpdate(gpu_t* gpu) {
 		.pCommandBuffers = &frame->cmd_buff->buffer,
 		.commandBufferCount = 1,
 		.pWaitSemaphores = &gpu->present_comp_sem,
-		.pSignalSemaphores = &gpu->render_comp_sem,
+		.pSignalSemaphores = &render_finished,
 	};
 
 	result = vkQueueSubmit(gpu->queue, 1, &submit_info, frame->fence);
 	if (result != VK_SUCCESS) {
-		gpuError(gpu, "vkQueueSubmit", "Unable to submit the queue when ending a frame update.");
+		debugPrint(DEBUG_PRINT_ERROR, "vkQueueSubmit: Unable to submit the queue when ending a frame update.\n");
 		return;
 	}
 
@@ -723,13 +726,13 @@ void gpuEndFrameUpdate(gpu_t* gpu) {
 		.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
 		.swapchainCount = 1,
 		.pSwapchains = &gpu->swap_chain,
-		.pImageIndices = &image_idx,
-		.pWaitSemaphores = &gpu->render_comp_sem,
+		.pImageIndices = &gpu->active_image_idx,
+		.pWaitSemaphores = &render_finished,
 		.waitSemaphoreCount = 1
 	};
 	result = vkQueuePresentKHR(gpu->queue, &present_info);
-	if (result != VK_SUCCESS) {
-		gpuError(gpu, "vkQueuePresentKHR", "Unable to present the queue when ending a frame update.");
+	if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
+		debugPrint(DEBUG_PRINT_ERROR, "vkQueuePresentKHR: Unable to present the queue when ending a frame update.\n");
 		return;
 	}
 }
@@ -753,7 +756,12 @@ gpu_descriptor_t* gpuCreateDescriptorSets(gpu_t* gpu, const gpu_descriptor_info_
 		return gpuError(gpu, "vkAllocateDescriptorSets", "Unalbe to allocate for a descriptor set.");
 	}
 
-	VkWriteDescriptorSet* write_descriptor_set = _alloca(sizeof(VkWriteDescriptorSet) * descriptor_info->uniform_buffer_count);
+	VkWriteDescriptorSet* write_descriptor_set = NULL;
+	if (descriptor_info->uniform_buffer_count > 0) {
+		write_descriptor_set = heapAlloc(gpu->heap,
+			sizeof(VkWriteDescriptorSet) * descriptor_info->uniform_buffer_count,
+			_Alignof(VkWriteDescriptorSet));
+	}
 	for (int x = 0; x < descriptor_info->uniform_buffer_count; x++) {
 		write_descriptor_set[x] = (VkWriteDescriptorSet){
 			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
@@ -765,6 +773,9 @@ gpu_descriptor_t* gpuCreateDescriptorSets(gpu_t* gpu, const gpu_descriptor_info_
 		};
 	}
 	vkUpdateDescriptorSets(gpu->logic_dev, descriptor_info->uniform_buffer_count, write_descriptor_set, 0, NULL);
+	if (write_descriptor_set) {
+		heapFree(gpu->heap, write_descriptor_set);
+	}
 	
 	return descriptor;
 }
@@ -818,7 +829,7 @@ gpu_pipeline_t* gpuCreatePipeline(gpu_t* gpu, const gpu_pipeline_info_t* pipelin
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
 		.depthTestEnable = VK_TRUE,
 		.depthWriteEnable = VK_TRUE,
-		.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL,
+		.depthCompareOp = VK_COMPARE_OP_LESS,
 		.depthBoundsTestEnable = VK_FALSE,
 		.back.failOp = VK_STENCIL_OP_KEEP,
 		.back.passOp = VK_STENCIL_OP_KEEP,
@@ -893,10 +904,10 @@ gpu_pipeline_t* gpuCreatePipeline(gpu_t* gpu, const gpu_pipeline_info_t* pipelin
 
 void gpuDestroyPipeline(gpu_t* gpu, gpu_pipeline_t* pipeline) {
 	if (pipeline) {
-		if (pipeline->pipeline_layout)
-			vkDestroyPipelineLayout(gpu->logic_dev, pipeline->pipeline_layout, NULL);
 		if (pipeline->pipeline)
 			vkDestroyPipeline(gpu->logic_dev, pipeline->pipeline, NULL);
+		if (pipeline->pipeline_layout)
+			vkDestroyPipelineLayout(gpu->logic_dev, pipeline->pipeline_layout, NULL);
 
 		heapFree(gpu->heap, pipeline);
 	}
@@ -931,7 +942,8 @@ gpu_uniform_buffer_t* gpuCreateUniformBuffer(gpu_t* gpu, const gpu_uniform_buffe
 	VkMemoryAllocateInfo mem_alloc = {
 		.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
 		.allocationSize = mem_req.size,
-		.memoryTypeIndex = gpuGetMemoryTypeIndex(gpu, mem_req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+		.memoryTypeIndex = gpuGetMemoryTypeIndex(gpu, mem_req.memoryTypeBits,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
 	};
 	vk_result = vkAllocateMemory(gpu->logic_dev, &mem_alloc, NULL, &ub->dev_mem);
 	if (vk_result != VK_SUCCESS) {
@@ -983,6 +995,7 @@ gpu_mesh_t* gpuCreateMesh(gpu_t* gpu, gpu_mesh_info_t* mesh_info) {
 	mesh->idx_type = gpu->mesh_idx_type[mesh_info->layout];
 	mesh->idx_count = (int) mesh_info->idx_data_size / gpu->mesh_idx_size[mesh_info->layout];
 	mesh->vtx_count = (int) mesh_info->vtx_data_size / gpu->mesh_vtx_size[mesh_info->layout];
+	mesh->vtx_data_size = mesh_info->vtx_data_size;
 	
 	//
 	// ================== Vertex Data ==================
@@ -1003,7 +1016,8 @@ gpu_mesh_t* gpuCreateMesh(gpu_t* gpu, gpu_mesh_info_t* mesh_info) {
 	VkMemoryAllocateInfo mem_alloc = {
 		.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
 		.allocationSize = mem_req.size,
-		.memoryTypeIndex = gpuGetMemoryTypeIndex(gpu, mem_req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+		.memoryTypeIndex = gpuGetMemoryTypeIndex(gpu, mem_req.memoryTypeBits,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
 	};
 	vk_result = vkAllocateMemory(gpu->logic_dev, &mem_alloc, NULL, &mesh->vtx_mem);
 	if (vk_result != VK_SUCCESS) {
@@ -1041,7 +1055,8 @@ gpu_mesh_t* gpuCreateMesh(gpu_t* gpu, gpu_mesh_info_t* mesh_info) {
 	VkMemoryAllocateInfo mem_alloc_index = {
 		.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
 		.allocationSize = mem_req_index.size,
-		.memoryTypeIndex = gpuGetMemoryTypeIndex(gpu, mem_req_index.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+		.memoryTypeIndex = gpuGetMemoryTypeIndex(gpu, mem_req_index.memoryTypeBits,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
 	};
 	vk_result = vkAllocateMemory(gpu->logic_dev, &mem_alloc_index, NULL, &mesh->idx_mem);
 	if (vk_result != VK_SUCCESS) {
@@ -1061,6 +1076,17 @@ gpu_mesh_t* gpuCreateMesh(gpu_t* gpu, gpu_mesh_info_t* mesh_info) {
 	}
 
 	return mesh;
+}
+
+void gpuUpdateMeshVertices(gpu_t* gpu, gpu_mesh_t* mesh, const void* data, size_t size) {
+	if (!mesh || !data || size > mesh->vtx_data_size) {
+		return;
+	}
+	void* destination = NULL;
+	if (vkMapMemory(gpu->logic_dev, mesh->vtx_mem, 0, size, 0, &destination) == VK_SUCCESS) {
+		memcpy(destination, data, size);
+		vkUnmapMemory(gpu->logic_dev, mesh->vtx_mem);
+	}
 }
 
 void gpuDestroyMesh(gpu_t* gpu, gpu_mesh_t* mesh) {
@@ -1105,7 +1131,7 @@ void gpuCommandDraw(gpu_t* gpu, gpu_cmd_buff_t* cmd_buff) {
 	}
 }
 
-static uint32_t gpuGetMemoryTypeIndex(gpu_t* gpu, uint32_t bits, VkMemoryPropertyFlags property_flags) {
+uint32_t gpuGetMemoryTypeIndex(gpu_t* gpu, uint32_t bits, VkMemoryPropertyFlags property_flags) {
 	for (uint32_t x = 0; x < gpu->mem_prop.memoryTypeCount; x++) {
 		if ((bits & (1UL << x)) &&
 			(gpu->mem_prop.memoryTypes[x].propertyFlags & property_flags) == property_flags) {
@@ -1120,7 +1146,7 @@ static uint32_t gpuGetMemoryTypeIndex(gpu_t* gpu, uint32_t bits, VkMemoryPropert
 //								    MESH LAYOUT
 // 
 
-static void gpuCreateMeshLayouts(gpu_t* gpu) {
+void gpuCreateMeshLayouts(gpu_t* gpu) {
 	//
 	// ================== GPU_MESH_LAYOUT_TRI_P444_I2 ==================
 	//
@@ -1196,7 +1222,7 @@ static void gpuCreateMeshLayouts(gpu_t* gpu) {
 	gpu->mesh_vtx_size[GPU_MESH_LAYOUT_TRI_P444_C444_I2] = 24;
 }
 
-static void gpuDestroyMeshLayouts(gpu_t* gpu) {
+void gpuDestroyMeshLayouts(gpu_t* gpu) {
 	for (int x = 0; x < _countof(gpu->mesh_vtx_input_info); x++) {
 		if (gpu->mesh_vtx_input_info[x].pVertexAttributeDescriptions) {
 			heapFree(gpu->heap, gpu->mesh_vtx_input_info[x].pVertexBindingDescriptions);
@@ -1235,7 +1261,12 @@ gpu_shader_t* gpuCreateShader(gpu_t* gpu, gpu_shader_info_t* shader_info) {
 		return gpuError(gpu, "vkCreateShaderModule", "Unable to create the fragment shader module.");
 	}
 
-	VkDescriptorSetLayoutBinding* descriptor_set_layout_bindings = alloca(sizeof(VkDescriptorSetLayoutBinding) * shader_info->uniform_buffer_count);
+	VkDescriptorSetLayoutBinding* descriptor_set_layout_bindings = NULL;
+	if (shader_info->uniform_buffer_count > 0) {
+		descriptor_set_layout_bindings = heapAlloc(gpu->heap,
+			sizeof(VkDescriptorSetLayoutBinding) * shader_info->uniform_buffer_count,
+			_Alignof(VkDescriptorSetLayoutBinding));
+	}
 	for (int x = 0; x < shader_info->uniform_buffer_count; x++) {
 		descriptor_set_layout_bindings[x] = (VkDescriptorSetLayoutBinding){
 			.binding = x,
@@ -1251,6 +1282,9 @@ gpu_shader_t* gpuCreateShader(gpu_t* gpu, gpu_shader_info_t* shader_info) {
 		.pBindings = descriptor_set_layout_bindings
 	};
 	vk_result = vkCreateDescriptorSetLayout(gpu->logic_dev, &descriptor_set_layout_info, NULL, &shader->descriptor_set_layout);
+	if (descriptor_set_layout_bindings) {
+		heapFree(gpu->heap, descriptor_set_layout_bindings);
+	}
 	if (vk_result != VK_SUCCESS) {
 		return gpuError(gpu, "vkCreateDescriptorSetLayout", "Unable to create the descriptor set layout.");
 	}
@@ -1279,7 +1313,20 @@ void gpuQueueWaitIdle(gpu_t* gpu) {
 }
 
 uint32_t gpuGetFrameCount(gpu_t* gpu) {
-	return gpu->frame_count;
+	/* The backend deliberately runs one frame in flight because depth is shared. */
+	return 1;
+}
+
+VkInstance gpuGetInstance(gpu_t* gpu) { return gpu->inst; }
+VkPhysicalDevice gpuGetPhysicalDevice(gpu_t* gpu) { return gpu->phys_dev; }
+VkDevice gpuGetDevice(gpu_t* gpu) { return gpu->logic_dev; }
+VkQueue gpuGetQueue(gpu_t* gpu) { return gpu->queue; }
+uint32_t gpuGetQueueFamilyIndex(gpu_t* gpu) { return gpu->queue_family_index; }
+VkRenderPass gpuGetRenderPass(gpu_t* gpu) { return gpu->render_pass; }
+uint32_t gpuGetSwapchainImageCount(gpu_t* gpu) { return gpu->frame_count; }
+uint32_t gpuGetMinimumImageCount(gpu_t* gpu) { return gpu->minimum_image_count; }
+VkCommandBuffer gpuGetCommandBuffer(gpu_cmd_buff_t* command_buffer) {
+	return command_buffer->buffer;
 }
 
 void* gpuError(gpu_t* gpu, const char* fn_name, const char* reason) {

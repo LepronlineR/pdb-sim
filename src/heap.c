@@ -44,7 +44,10 @@ heap_t* heapCreate(size_t grow_increment) {
 }
 
 void* heapAlloc(heap_t* heap, size_t size, size_t alignment) {
-	
+	/* TLSF requires a non-zero alignment at least as large as a pointer. */
+	if (alignment < sizeof(void*)) {
+		alignment = sizeof(void*);
+	}
 	mutexLock(heap->mutex);
 	
 	void* address = tlsf_memalign(heap->tlsf, alignment, size);

@@ -41,13 +41,13 @@ __forceinline vec3f_t vec3fUp() { return (vec3f_t) { .x = 0.0f, .y = 1.0f, .z = 
 
 __forceinline vec3f_t vec3fDown() { return (vec3f_t) { .x = 0.0f, .y = -1.0f, .z = 0.0f }; }
 
-__forceinline vec3f_t vec3fRight() { return (vec3f_t) { .x = 0.0f, .y = 1.0f, .z = 0.0f }; }
+__forceinline vec3f_t vec3fRight() { return (vec3f_t) { .x = 1.0f, .y = 0.0f, .z = 0.0f }; }
 
-__forceinline vec3f_t vec3fLeft() { return (vec3f_t) { .x = 0.0f, .y = -1.0f, .z = 0.0f }; }
+__forceinline vec3f_t vec3fLeft() { return (vec3f_t) { .x = -1.0f, .y = 0.0f, .z = 0.0f }; }
 
 // Negate vector
 // 
-__forceinline vec3f_t vec3fNeg(vec3f_t vec) { return (vec3f_t) { .x = -vec.x, .y = --vec.y, .z = -vec.z }; }
+__forceinline vec3f_t vec3fNeg(vec3f_t vec) { return (vec3f_t) { .x = -vec.x, .y = -vec.y, .z = -vec.z }; }
 
 // Vector Addition: A + B
 // 
@@ -106,7 +106,7 @@ __forceinline float vec3fMagnitude(vec3f_t v) { return sqrtf(vec3fMagnitudeSqrd(
 //  
 __forceinline float vec3fDistanceSqrd(vec3f_t a, vec3f_t b) { 
     float diff_x = b.x - a.x;
-    float diff_y = b.y - b.y;
+    float diff_y = b.y - a.y;
     float diff_z = b.z - a.z;
     return diff_x * diff_x + diff_y * diff_y + diff_z * diff_z;
 }
