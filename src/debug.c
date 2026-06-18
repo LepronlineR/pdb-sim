@@ -2,7 +2,7 @@
 
 static uint32_t debug_mask = 0xFFFFFFFF;
 
-static LONG debugExceptionHandler(LPEXCEPTION_POINTERS pointer) {
+LONG debugExceptionHandler(LPEXCEPTION_POINTERS pointer) {
 
 	// XXX: MS uses 0xE06D7363 to indicate C++ language exception.
 	// We're just to going to ignore them. Sometimes Vulkan throws them on startup?
@@ -48,12 +48,16 @@ void debugPrintConsole(const char* format, ...) {
 	DWORD charsWritten = 0;
 	DWORD written = 0;
 	HANDLE console = GetStdHandle(STD_OUTPUT_HANDLE);
-	WriteConsoleA(console, buffer, bytes, &charsWritten, NULL);
+	if (!WriteConsoleA(console, buffer, bytes, &charsWritten, NULL)) {
+		WriteFile(console, buffer, bytes, &written, NULL);
+	}
 	va_end(args);
 }
 
 void debugInstallExceptionHandler() {
-	AddVectoredExceptionHandler(TRUE, debugExceptionHandler);
+	/* A vectored handler sees first-chance exceptions used internally by GPU
+	   drivers. Only handle exceptions that are actually unhandled. */
+	SetUnhandledExceptionFilter(debugExceptionHandler);
 }
 
 void debugSetPrintMask(uint32_t mask) {
@@ -64,7 +68,12 @@ void debugPrint(uint32_t type, _Printf_format_string_ const char* format, ...) {
 	if ((debug_mask & type) == 0)
 		return;
 
-	debugPrintConsole(format);
+	char buffer[1024] = { 0 };
+	va_list args;
+	va_start(args, format);
+	vsnprintf(buffer, sizeof(buffer), format, args);
+	va_end(args);
+	debugPrintConsole("%s", buffer);
 
 	if (type == DEBUG_PRINT_ERROR) // enable backtrace for all errors
 		debugBacktraceManually();
@@ -73,7 +82,7 @@ void debugPrint(uint32_t type, _Printf_format_string_ const char* format, ...) {
 void debugBacktraceManually(){
 	SYMBOL_INFO* symbol = (SYMBOL_INFO*)calloc(1, sizeof(SYMBOL_INFO) + 256 * sizeof(TCHAR));
 	if (symbol == NULL) {
-		debugPrintConsole(DEBUG_PRINT_ERROR, "Symbol not initialized for debug backtrace.\n");
+		debugPrintConsole("Symbol not initialized for debug backtrace.\n");
 		return;
 	}
 	symbol->MaxNameLen = 256;
@@ -91,7 +100,7 @@ void debugBacktraceManually(){
 		IMAGEHLP_LINE64 line = { 0 };
 		line.SizeOfStruct = sizeof(IMAGEHLP_LINE64);
 
-		if (SymFromAddr(h_proc, (DWORD64)(stack[x]), 0, &symbol)
+		if (SymFromAddr(h_proc, (DWORD64)(stack[x]), 0, symbol)
 			&& SymGetLineFromAddr64(h_proc, (DWORD64)(stack[x]), &displacement, &line)) {
 			debugPrintConsole("[%i] %s - 0x%0llX (%s:%lu)\n", frames - x - 1, symbol->Name, symbol->Address, line.FileName, line.LineNumber);
 		} else {
@@ -107,7 +116,7 @@ void debugBacktraceManually(){
 void debugBacktraceLeakedMemory(void** stack, int frames) {
 	SYMBOL_INFO* symbol = (SYMBOL_INFO*)calloc(1, sizeof(SYMBOL_INFO) + 256 * sizeof(TCHAR));
 	if (symbol == NULL) {
-		debugPrintConsole(DEBUG_PRINT_ERROR, "Symbol not initialized for debug backtrace.\n");
+		debugPrintConsole("Symbol not initialized for debug backtrace.\n");
 		return;
 	}
 	symbol->MaxNameLen = 256;
@@ -122,7 +131,7 @@ void debugBacktraceLeakedMemory(void** stack, int frames) {
 		IMAGEHLP_LINE64 line = { 0 };
 		line.SizeOfStruct = sizeof(IMAGEHLP_LINE64);
 
-		if (SymFromAddr(h_proc, address, 0, &symbol)
+		if (SymFromAddr(h_proc, address, 0, symbol)
 			&& SymGetLineFromAddr64(h_proc, address, &displacement, &line)) {
 			debugPrintConsole("[%i] %s - 0x%0llX (%s:%lu)\n", frames - x - 1, symbol->Name, symbol->Address, line.FileName, line.LineNumber);
 		} else {

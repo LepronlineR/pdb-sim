@@ -27,7 +27,7 @@ typedef enum debug_print_t {
 // Setup flags for debug printing
 //
 // RETURN:
-static LONG debugExceptionHandler(LPEXCEPTION_POINTERS pointer);
+LONG debugExceptionHandler(LPEXCEPTION_POINTERS pointer);
 
 
 // Prints the format to the console
