@@ -5,6 +5,7 @@
 #include "timer.h"
 #include "renderer.h"
 #include "scene.h"
+#include "ui.h"
 
 #include "test.h"
 #include "debug.h"
@@ -16,8 +17,9 @@ int main(int argc, const char*argv[]) {
 
 	timerStartup();
 
-	heap_t* heap = heapCreate(2 * 1024 * 1024); // 2 MB pool
+	heap_t* heap = heapCreate(128 * 1024 * 1024); // 128 MBs
 	wm_window_t* window = wmCreateWindow(heap);
+	ui_t* ui = uiCreate(heap, window);
 	fs_t* fs = fsCreate(heap, 8);
 	timer_object_t* root_time = timerObjectCreate(heap, NULL);
 	renderer_t* renderer = rendererCreate(heap, window);
@@ -29,6 +31,9 @@ int main(int argc, const char*argv[]) {
 		sceneUpdate(scene);
 	}
 
+	rendererDestroy(renderer);
+	uiDestroy(ui);
+	sceneDestroy(scene);
 	timerObjectDestroy(root_time);
 	fsDestroy(fs);
 	wmDestroyWindow(window);

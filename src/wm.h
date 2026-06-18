@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 #include <stdbool.h>
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
 
 /*		WINDOWS MANAGER
 *    
@@ -13,6 +15,10 @@
 
 typedef struct wm_window_t wm_window_t;
 typedef struct heap_t heap_t;
+typedef bool (*wm_message_callback_t)(void* user_data, void* native_window,
+	uint32_t message, uintptr_t w_param, intptr_t l_param);
+LRESULT CALLBACK wmWindowProc(HWND window, UINT message, WPARAM w_param,
+	LPARAM l_param);
 
 // mouse input
 enum {
@@ -72,5 +78,8 @@ void wmGetMouseLoc(wm_window_t* window, int* x, int* y);
 //
 // RETURN: window object
 void* wmGetHWND(wm_window_t* window);
+void wmSetMessageCallback(wm_window_t* window, wm_message_callback_t callback,
+	void* user_data);
+void wmSetCursorCaptured(wm_window_t* window, bool captured);
 
 #endif

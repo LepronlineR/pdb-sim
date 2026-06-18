@@ -4,7 +4,9 @@
 #include "gpu.h"
 #include "heap.h"
 #include "deque.h"
+#include "semaphore.h"
 #include "thread.h"
+#include "ui.h"
 #include "wm.h"
 
 #include <assert.h>
@@ -25,6 +27,8 @@ typedef struct command_model_t {
 	gpu_mesh_info_t* mesh;
 	gpu_shader_info_t* shader;
 	gpu_uniform_buffer_info_t uniform_buffer;
+	void* dynamic_vtx_data;
+	size_t dynamic_vtx_size;
 } command_model_t;
 
 typedef struct command_frame_done_t {
@@ -57,6 +61,7 @@ typedef struct renderer_t {
 	thread_t* thread;
 	gpu_t* gpu;
 	deque_t* queue;
+	semaphore_t* frame_slot;
 
 	int frame_counter;
 	int gpu_frame_count;
@@ -69,21 +74,13 @@ typedef struct renderer_t {
 	draw_shader_t shaders[RENDERER_MAX_DRAW_AMOUNT];
 } renderer_t;
 
-static int rendererThreadFunc(void* ID);
-static draw_shader_t* rendererShaderModelCommand(renderer_t* render, command_model_t* command);
-static draw_mesh_t* rendererMeshModelCommand(renderer_t* render, command_model_t* command);
-static draw_instance_t* rendererInstanceModelCommand(renderer_t* render, command_model_t* command, gpu_shader_t* shader);
-static void rendererDestroyStaleData(renderer_t* render);
-
 renderer_t* rendererCreate(heap_t* heap, wm_window_t* window) {
 	renderer_t* render = heapAlloc(heap, sizeof(renderer_t), 8);
+	memset(render, 0, sizeof(*render));
 	render->heap = heap;
 	render->window = window;
-	render->queue = dequeCreate(heap, 3);
-	render->frame_counter = 0;
-	render->instance_count = 0;
-	render->mesh_count = 0;
-	render->shader_count = 0;
+	render->queue = dequeCreate(heap, 128);
+	render->frame_slot = semaphoreCreate(1, 1);
 	render->thread = threadCreate(rendererThreadFunc, render);
 	return render;
 }
@@ -91,6 +88,7 @@ renderer_t* rendererCreate(heap_t* heap, wm_window_t* window) {
 void rendererDestroy(renderer_t* render) {
 	dequePushBack(render->queue, NULL);
 	threadDestroy(render->thread);
+	semaphoreDestroy(render->frame_slot);
 	dequeDestroy(render->queue);
 	heapFree(render->heap, render);
 }
@@ -104,32 +102,52 @@ void rendererModelAdd(renderer_t* render, ecs_entity_t* entity, gpu_mesh_info_t*
 	command->uniform_buffer.size = uniform->size;
 	command->uniform_buffer.data = heapAlloc(render->heap, uniform->size, 8);
 	memcpy(command->uniform_buffer.data, uniform->data, uniform->size);
+	command->dynamic_vtx_data = NULL;
+	command->dynamic_vtx_size = 0;
+	if (mesh->dynamic) {
+		command->dynamic_vtx_size = mesh->vtx_data_size;
+		command->dynamic_vtx_data = heapAlloc(render->heap, mesh->vtx_data_size, 8);
+		memcpy(command->dynamic_vtx_data, mesh->vtx_data, mesh->vtx_data_size);
+	}
 	dequePushBack(render->queue, command);
 }
 
 void rendererFrameDone(renderer_t* render) {
+	/* Keep at most one complete frame queued. This prevents the update thread
+	   from outrunning FIFO presentation and accumulating copied mesh buffers. */
+	semaphoreGet(render->frame_slot);
 	command_frame_done_t* command = heapAlloc(render->heap, sizeof(command_frame_done_t), 8);
 	command->type = RENDERER_COMMAND_FRAME_COMPLETE;
 	dequePushBack(render->queue, command);
 }
 
-static int rendererThreadFunc(void* ID) {
+int rendererThreadFunc(void* ID) {
 	renderer_t* render = ID;
 	render->gpu = gpuCreate(render->heap, render->window);
+	if (render->gpu == NULL) {
+		return -1;
+	}
 	render->gpu_frame_count = gpuGetFrameCount(render->gpu);
+	ui_t* ui = uiGet(render->window);
+	uiRendererInitialize(ui, render->gpu);
 
 	gpu_cmd_buff_t* cmd_buff = NULL;
 	gpu_pipeline_t* p_pipeline = NULL;
 	gpu_mesh_t* p_mesh = NULL;
-	command_type_t* command_type = dequePopBack(render->queue);
+	command_type_t* command_type = dequePopFront(render->queue);
 	int frame_index = 0;
 
 	while (command_type) {
 
 		if (cmd_buff == NULL) { cmd_buff = gpuBeginFrameUpdate(render->gpu); }
+		if (cmd_buff == NULL) {
+			heapFree(render->heap, command_type);
+			break;
+		}
 
 		switch (*command_type) {
 			case RENDERER_COMMAND_FRAME_COMPLETE: // finish rendering the frame
+				uiRendererDraw(ui, render->gpu, cmd_buff);
 				gpuEndFrameUpdate(render->gpu);
 				cmd_buff = NULL;
 				p_pipeline = NULL;
@@ -137,6 +155,7 @@ static int rendererThreadFunc(void* ID) {
 				rendererDestroyStaleData(render);
 				++render->frame_counter;
 				frame_index = render->frame_counter % render->gpu_frame_count;
+				semaphoreRelease(render->frame_slot);
 				break;
 
 			case RENDERER_COMMAND_DRAW_MODEL: { // draw the model
@@ -146,6 +165,9 @@ static int rendererThreadFunc(void* ID) {
 				draw_instance_t* instance = rendererInstanceModelCommand(render, model, shader->shader);
 
 				heapFree(render->heap, model->uniform_buffer.data);
+				if (model->dynamic_vtx_data) {
+					heapFree(render->heap, model->dynamic_vtx_data);
+				}
 
 				if (p_pipeline != shader->pipeline) {
 					gpuCommandBindPipeline(cmd_buff, shader->pipeline);
@@ -161,11 +183,13 @@ static int rendererThreadFunc(void* ID) {
 				break;
 			}
 		}
+		heapFree(render->heap, command_type);
 
-		command_type = dequePopBack(render->queue);
+		command_type = dequePopFront(render->queue);
 	}
 
 	gpuQueueWaitIdle(render->gpu);
+	uiRendererShutdown(ui);
 	render->frame_counter += render->gpu_frame_count + 1;
 	rendererDestroyStaleData(render);
 	gpuDestroy(render->gpu);
@@ -174,7 +198,7 @@ static int rendererThreadFunc(void* ID) {
 	return 0;
 }
 
-static draw_shader_t* rendererShaderModelCommand(renderer_t* render, command_model_t* command) {
+draw_shader_t* rendererShaderModelCommand(renderer_t* render, command_model_t* command) {
 	draw_shader_t* shader = NULL;
 	for (int x = 0; x < render->shader_count; x++) {
 		if (render->shaders[x].info == command->shader) { // got the right shader
@@ -204,7 +228,7 @@ static draw_shader_t* rendererShaderModelCommand(renderer_t* render, command_mod
 	return shader;
 }
 
-static draw_mesh_t* rendererMeshModelCommand(renderer_t* render, command_model_t* command) {
+draw_mesh_t* rendererMeshModelCommand(renderer_t* render, command_model_t* command) {
 	draw_mesh_t* mesh = NULL;
 	for (int x = 0; x < render->mesh_count; x++) {
 		if (render->meshes[x].info == command->mesh) { // found mesh
@@ -222,12 +246,16 @@ static draw_mesh_t* rendererMeshModelCommand(renderer_t* render, command_model_t
 	if (mesh->mesh == NULL) {
 		mesh->mesh = gpuCreateMesh(render->gpu, mesh->info);
 	}
+	if (command->dynamic_vtx_data) {
+		gpuUpdateMeshVertices(render->gpu, mesh->mesh,
+			command->dynamic_vtx_data, command->dynamic_vtx_size);
+	}
 
 	mesh->frame_counter = render->frame_counter;
 	return mesh;
 }
 
-static draw_instance_t* rendererInstanceModelCommand(renderer_t* render, command_model_t* command, gpu_shader_t* shader) {
+draw_instance_t* rendererInstanceModelCommand(renderer_t* render, command_model_t* command, gpu_shader_t* shader) {
 	draw_instance_t* instance = NULL;
 	for (int x = 0; x < render->instance_count; x++) {
 		if (memcmp(&render->instances[x].entity, &command->entity, sizeof(ecs_entity_t)) == 0) { // found instance
@@ -261,8 +289,8 @@ static draw_instance_t* rendererInstanceModelCommand(renderer_t* render, command
 	return instance;
 }
 
-static void rendererDestroyStaleData(renderer_t* render) {
-	for (int x = render->instance_count; x >= 0; x--) { // past frames (used instance value)
+void rendererDestroyStaleData(renderer_t* render) {
+	for (int x = render->instance_count - 1; x >= 0; x--) { // past frames (used instance value)
 		if (render->instances[x].frame_counter + render->gpu_frame_count <= render->frame_counter) {
 			for (int frame = 0; frame < render->gpu_frame_count; frame++) {
 				gpuDestroyDescriptorSets(render->gpu, render->instances[x].descriptors[frame]);
@@ -275,7 +303,7 @@ static void rendererDestroyStaleData(renderer_t* render) {
 		}
 	}
 
-	for (int x = render->mesh_count; x >= 0; x--) {
+	for (int x = render->mesh_count - 1; x >= 0; x--) {
 		if (render->meshes[x].frame_counter + render->gpu_frame_count <= render->frame_counter) {
 			gpuDestroyMesh(render->gpu, render->meshes[x].mesh);
 			render->meshes[x] = render->meshes[render->mesh_count - 1];
@@ -283,7 +311,7 @@ static void rendererDestroyStaleData(renderer_t* render) {
 		}
 	}
 
-	for (int x = render->shader_count; x >= 0; x--) {
+	for (int x = render->shader_count - 1; x >= 0; x--) {
 		if (render->shaders[x].frame_counter + render->gpu_frame_count <= render->frame_counter) {
 			gpuDestroyPipeline(render->gpu, render->shaders[x].pipeline);
 			gpuDestroyShader(render->gpu, render->shaders[x].shader);

@@ -17,6 +17,12 @@ typedef struct wm_window_t {
 	uint32_t key_mask;
 	int mouse_x;
 	int mouse_y;
+	int last_mouse_x;
+	int last_mouse_y;
+	bool has_mouse_position;
+	bool cursor_captured;
+	wm_message_callback_t message_callback;
+	void* message_user_data;
 } wm_window_t ;
 
 const struct
@@ -44,9 +50,12 @@ key_map_k[] =
 };
 
 // https://learn.microsoft.com/en-us/windows/win32/learnwin32/your-first-windows-program
-static LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+LRESULT CALLBACK wmWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
 	wm_window_t* win = (wm_window_t*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
 	if (win) {
+		bool message_handled = win->message_callback &&
+			win->message_callback(win->message_user_data, hwnd, uMsg,
+				(uintptr_t)wParam, (intptr_t)lParam);
 		switch (uMsg) {
 			case WM_KEYDOWN:
 				for (int x = 0; x < _countof(key_map_k); x++) {
@@ -81,7 +90,7 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM l
 				win->mouse_mask |= k_mouse_button_middle; break;
 			// MOVE MOUSE
 			case WM_MOUSEMOVE:
-				if (win->focused) { // get relative mouse position
+				if (win->focused && win->cursor_captured) { // get relative mouse position
 					POINT cur_cursor;
 					GetCursorPos(&cur_cursor);
 
@@ -94,18 +103,29 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM l
 					POINT new_cursor;
 					GetCursorPos(&new_cursor);
 
-					win->mouse_x = cur_cursor.x - new_cursor.x;
-					win->mouse_y = cur_cursor.y - new_cursor.y;
+					win->mouse_x += cur_cursor.x - new_cursor.x;
+					win->mouse_y += cur_cursor.y - new_cursor.y;
+				} else {
+					int mouse_x = GET_X_LPARAM(lParam);
+					int mouse_y = GET_Y_LPARAM(lParam);
+					if (win->has_mouse_position) {
+						win->mouse_x += mouse_x - win->last_mouse_x;
+						win->mouse_y += mouse_y - win->last_mouse_y;
+					}
+					win->last_mouse_x = mouse_x;
+					win->last_mouse_y = mouse_y;
+					win->has_mouse_position = true;
 				}
 				break;
 			case WM_ACTIVATEAPP:
-				ShowCursor(!wParam);
+				ShowCursor(!wParam || !win->cursor_captured);
 				win->focused = wParam;
 				break;
 			case WM_CLOSE:
 				win->quit = true;
 				break;
 		}
+		if (message_handled) return 1;
 	}
 
 	return DefWindowProc(hwnd, uMsg, wParam, lParam);
@@ -114,9 +134,9 @@ static LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM l
 wm_window_t* wmCreateWindow(heap_t* heap) {
 
 	WNDCLASS win_class = {
-		.lpfnWndProc = WindowProc,
+		.lpfnWndProc = wmWindowProc,
 		.hInstance = GetModuleHandle(NULL),
-		.lpszClassName = L"PBR Simulation"
+		.lpszClassName = L"XPBD Sim"
 	};
 
 	RegisterClass(&win_class);
@@ -124,7 +144,7 @@ wm_window_t* wmCreateWindow(heap_t* heap) {
 	HWND hwnd = CreateWindowExW(
 		0,
 		win_class.lpszClassName,
-		L"PBR Simulation",
+		L"XPBD Sim",
 		WS_OVERLAPPEDWINDOW,
 		CW_USEDEFAULT,
 		CW_USEDEFAULT,
@@ -145,8 +165,16 @@ wm_window_t* wmCreateWindow(heap_t* heap) {
 	win->hwnd = hwnd;
 	win->key_mask = 0;
 	win->mouse_mask = 0;
+	win->mouse_x = 0;
+	win->mouse_y = 0;
+	win->last_mouse_x = 0;
+	win->last_mouse_y = 0;
+	win->has_mouse_position = false;
 	win->quit = 0;
 	win->heap = heap;
+	win->cursor_captured = true;
+	win->message_callback = NULL;
+	win->message_user_data = NULL;
 
 	// place win as a long ptr through the hwnd so it can be accessible
 	SetWindowLongPtr(hwnd, GWLP_USERDATA, (LONG_PTR)win);
@@ -163,6 +191,8 @@ void wmDestroyWindow(wm_window_t* window) {
 }
 
 bool wmPumpWindow(wm_window_t* window) {
+	window->mouse_x = 0;
+	window->mouse_y = 0;
 	MSG msg = { 0 };
 	while (PeekMessage(&msg, window->hwnd, 0, 0, PM_REMOVE)) {
 		TranslateMessage(&msg);
@@ -186,4 +216,15 @@ void wmGetMouseLoc(wm_window_t* window, int* x, int* y) {
 
 void* wmGetHWND(wm_window_t* window) {
 	return window->hwnd;
+}
+
+void wmSetMessageCallback(wm_window_t* window, wm_message_callback_t callback,
+	void* user_data) {
+	window->message_callback = callback;
+	window->message_user_data = user_data;
+}
+
+void wmSetCursorCaptured(wm_window_t* window, bool captured) {
+	window->cursor_captured = captured;
+	if (!captured) ShowCursor(TRUE);
 }
