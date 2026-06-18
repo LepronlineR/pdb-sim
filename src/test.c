@@ -151,7 +151,7 @@ typedef struct thread_info_t {
 	event_t* _event;
 } thread_info_t;
 
-static int noSynchronizationTestFunc(void* user) {
+int noSynchronizationTestFunc(void* user) {
 	thread_info_t* thread_data = (thread_info_t*) user;
 	eventWait(thread_data->_event);
 
@@ -164,7 +164,7 @@ static int noSynchronizationTestFunc(void* user) {
 	return timeGetTime() - start;
 }
 
-static int atomicReadWriteTestFunc(void* user){
+int atomicReadWriteTestFunc(void* user){
 	thread_info_t* thread_data = (thread_info_t*)user;
 	eventWait(thread_data->_event);
 
@@ -177,7 +177,7 @@ static int atomicReadWriteTestFunc(void* user){
 	return timeGetTime() - start;
 }
 
-static int atomicIncrementTestFunc(void* user){
+int atomicIncrementTestFunc(void* user){
 	thread_info_t* thread_data = (thread_info_t*)user;
 	eventWait(thread_data->_event);
 
@@ -190,7 +190,7 @@ static int atomicIncrementTestFunc(void* user){
 	return timeGetTime() - start;
 }
 
-static int mutexTestFunc(void* user){
+int mutexTestFunc(void* user){
 	thread_info_t* thread_data = (thread_info_t*)user;
 	eventWait(thread_data->_event);
 
@@ -205,7 +205,7 @@ static int mutexTestFunc(void* user){
 	return timeGetTime() - start;
 }
 
-static void runThreadBenchmark(int(*function)(void*), const char* name) {
+void runThreadBenchmark(int(*function)(void*), const char* name) {
 	int count = 0;
 	thread_info_t info = {
 		.count = &count,

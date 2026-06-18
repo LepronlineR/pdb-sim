@@ -20,11 +20,11 @@ void testLeakedHeapAllocation();
 typedef struct thread_data_t thread_data_t;
 typedef struct performance_counter_t performance_counter_t;
 
-static int noSynchronizationTestFunc(void* user);
-static int atomicReadWriteTestFunc(void* user);
-static int atomicIncrementTestFunc(void* user);
-static int mutexTestFunc(void* user);
-static void runThreadBenchmark(int (*function)(void*), const char* name);
+int noSynchronizationTestFunc(void* user);
+int atomicReadWriteTestFunc(void* user);
+int atomicIncrementTestFunc(void* user);
+int mutexTestFunc(void* user);
+void runThreadBenchmark(int (*function)(void*), const char* name);
 void testThreading();
 
 #endif
