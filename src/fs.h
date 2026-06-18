@@ -56,5 +56,11 @@ size_t fsWorkGetSize(fs_work_t* work);
 
 // Free a file work object.
 void fsWorkDestroy(fs_work_t* work);
+void fileRead(fs_t* fs, fs_work_t* work);
+void fileWrite(fs_work_t* work);
+void fileDecompress(fs_work_t* work);
+void fileCompress(fs_t* fs, fs_work_t* work);
+int fileThreadFunc(void* user);
+int compressThreadFunc(void* user);
 
 #endif

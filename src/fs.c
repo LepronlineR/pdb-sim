@@ -40,9 +40,6 @@ typedef struct fs_work_t {
 	int result;
 } fs_work_t;
 
-static int fileThreadFunc(void* user);
-static int compressThreadFunc(void* user);
-
 fs_t* fsCreate(heap_t* heap, int queue_capacity) {
 	fs_t* fs = heapAlloc(heap, sizeof(fs_t), 8);
 	fs->heap = heap;
@@ -146,10 +143,11 @@ void fsWorkDestroy(fs_work_t* work) {
 	}
 }
 
-static void fileRead(fs_t* fs, fs_work_t* work) {
+void fileRead(fs_t* fs, fs_work_t* work) {
 	wchar_t w_path[1024] = { 0 };
-	if (MultiByteToWideChar(CP_UTF8, 0, work->path, -1, w_path, 0) <= 0) {
+	if (MultiByteToWideChar(CP_UTF8, 0, work->path, -1, w_path, _countof(w_path)) <= 0) {
 		work->result = -1;
+		eventSignal(work->done);
 		return;
 	}
 
@@ -157,12 +155,14 @@ static void fileRead(fs_t* fs, fs_work_t* work) {
 		FILE_ATTRIBUTE_NORMAL, NULL);
 	if (file == INVALID_HANDLE_VALUE) {
 		work->result = GetLastError();
+		eventSignal(work->done);
 		return;
 	}
 
 	if (!GetFileSizeEx(file, (PLARGE_INTEGER)&work->size)) {
 		work->result = GetLastError();
 		CloseHandle(file);
+		eventSignal(work->done);
 		return;
 	}
 
@@ -173,6 +173,7 @@ static void fileRead(fs_t* fs, fs_work_t* work) {
 	if (!read_result || bytes_read != work->size) {
 		work->result = GetLastError();
 		CloseHandle(file);
+		eventSignal(work->done);
 		return;
 	}
 
@@ -192,10 +193,11 @@ static void fileRead(fs_t* fs, fs_work_t* work) {
 	}
 }
 
-static void fileWrite(fs_work_t* work) {
+void fileWrite(fs_work_t* work) {
 	wchar_t w_path[1024] = { 0 };
-	if (MultiByteToWideChar(CP_UTF8, 0, work->path, -1, w_path, 0) <= 0) {
+	if (MultiByteToWideChar(CP_UTF8, 0, work->path, -1, w_path, _countof(w_path)) <= 0) {
 		work->result = -1;
+		eventSignal(work->done);
 		return;
 	}
 
@@ -203,6 +205,7 @@ static void fileWrite(fs_work_t* work) {
 		CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
 	if (file == INVALID_HANDLE_VALUE) {
 		work->result = GetLastError();
+		eventSignal(work->done);
 		return;
 	}
 
@@ -210,6 +213,7 @@ static void fileWrite(fs_work_t* work) {
 	if (!WriteFile(file, work->buffer, (DWORD)work->size, &bytes_written, NULL)) {
 		work->result = GetLastError();
 		CloseHandle(file);
+		eventSignal(work->done);
 		return;
 	}
 
@@ -226,7 +230,7 @@ static void fileWrite(fs_work_t* work) {
 	eventSignal(work->done);
 }
 
-static void fileDecompress(fs_work_t* work) {
+void fileDecompress(fs_work_t* work) {
 	int compressed_size = 0;
 	memcpy(&compressed_size, work->buffer, sizeof(int));
 	int dst_buffer_size = (int) work->size;
@@ -253,7 +257,7 @@ static void fileDecompress(fs_work_t* work) {
 	eventSignal(work->done);
 }
 
-static void fileCompress(fs_t* fs, fs_work_t* work) {
+void fileCompress(fs_t* fs, fs_work_t* work) {
 	int dst_buffer_size = LZ4_compressBound(work->size);
 	char* dst_buffer = heapAlloc(work->heap, dst_buffer_size + sizeof(int), 8);
 	int compressed_size = LZ4_compress_default(work->buffer, dst_buffer + sizeof(int), (int)work->size, dst_buffer_size);
@@ -266,7 +270,7 @@ static void fileCompress(fs_t* fs, fs_work_t* work) {
 	dequePushBack(fs->file_queue, work);
 }
 
-static int fileThreadFunc(void* user) {
+int fileThreadFunc(void* user) {
 	fs_t* fs = user;
 	while (true) {
 		fs_work_t* work = (fs_work_t*) dequePopFront(fs->file_queue);
@@ -289,7 +293,7 @@ static int fileThreadFunc(void* user) {
 	return 0;
 }
 
-static int compressThreadFunc(void* user) {
+int compressThreadFunc(void* user) {
 	fs_t* fs = user;
 	while (true) {
 		fs_work_t* work = (fs_work_t*) dequePopFront(fs->compression_file_queue);
