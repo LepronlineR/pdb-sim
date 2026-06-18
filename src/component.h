@@ -8,6 +8,7 @@ typedef struct transform_t transform_t;
 typedef struct mat4f_t mat4f_t;
 typedef struct gpu_mesh_info_t gpu_mesh_info_t;
 typedef struct gpu_shader_info_t gpu_shader_info_t;
+typedef struct physics_t physics_t;
 
 // components
 typedef struct transform_component_t {
@@ -17,12 +18,28 @@ typedef struct transform_component_t {
 typedef struct camera_component_t {
 	mat4f_t projection;
 	mat4f_t view;
+	float orbit_target[3];
+	float orbit_yaw;
+	float orbit_pitch;
+	float orbit_distance;
 } camera_component_t;
 
 typedef struct model_component_t {
 	gpu_mesh_info_t* mesh_info;
 	gpu_shader_info_t* shader_info;
+	void* owned_resource;
+	void (*update_resource)(void* resource);
+	void (*destroy_resource)(void* resource);
 } model_component_t;
+
+typedef struct physics_world_component_t {
+	physics_t* physics;
+	float accumulator;
+} physics_world_component_t;
+
+typedef struct rigid_body_component_t {
+	struct physics_body_t* body;
+} rigid_body_component_t;
 
 typedef struct model_texture_component_t {
 	gpu_mesh_info_t* mesh_info;
