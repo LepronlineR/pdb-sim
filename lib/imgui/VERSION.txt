@@ -1,0 +1,5 @@
+Dear ImGui upstream commit:
+d15966ff6cb48adacaae2f6d40230b4194d8ea70
+
+Source: https://github.com/ocornut/imgui
+Vendored files: core library plus Win32 and Vulkan backends.
