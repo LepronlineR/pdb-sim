@@ -2,6 +2,8 @@
 #include "heap.h"
 #include "debug.h"
 
+#include <string.h>
+
 #define MAX_COMPONENT_TYPES 128
 #define MAX_ENTITIES_ALLOWED 1024
 
@@ -16,15 +18,15 @@ typedef struct ecs_t {
 	heap_t* heap;
 	int count;
 
-	int sequences[MAX_COMPONENT_TYPES];
+	int sequences[MAX_ENTITIES_ALLOWED];
 	ecs_entity_state_t entity_states[MAX_ENTITIES_ALLOWED];
-	uint64_t components_mask[MAX_COMPONENT_TYPES];
+	uint64_t components_mask[MAX_ENTITIES_ALLOWED];
 	ecs_component_t components[MAX_COMPONENT_TYPES];
 };
 
 ecs_t* ecsCreate(heap_t* heap) {
 	ecs_t* ecs = heapAlloc(heap, sizeof(ecs_t), 8);
-	memset(ecs, 0, sizeof(ecs));
+	memset(ecs, 0, sizeof(*ecs));
 	ecs->heap = heap;
 	ecs->count = 1;
 	return ecs;
@@ -44,7 +46,8 @@ void ecsUpdate(ecs_t* ecs) {
 		if (ecs->entity_states[x] == ECS_ENTITY_ADD) {
 			ecs->entity_states[x] = ECS_ENTITY_ACTIVE;
 		} else if (ecs->entity_states[x] == ECS_ENTITY_REMOVE) {
-			ecs->entity_states[x] = ECS_ENTITY_REMOVE;
+			ecs->entity_states[x] = ECS_ENTITY_INACTIVE;
+			ecs->components_mask[x] = 0;
 		}
 	}
 }
@@ -100,7 +103,12 @@ bool ecsEntityValid(ecs_t* ecs, ecs_entity_t ref, bool allow_pending_add) {
 }
 
 void* ecsEntityGet(ecs_t* ecs, ecs_entity_t ref, int component_type, bool allow_pending_add) {
-	return ecsEntityValid(ecs, ref, allow_pending_add) ? ecs->components[component_type].data : NULL;
+	if (!ecsEntityValid(ecs, ref, allow_pending_add) ||
+		(ecs->components_mask[ref.entity] & (1ULL << component_type)) == 0) {
+		return NULL;
+	}
+	return (char*)ecs->components[component_type].data +
+		ecs->components[component_type].size * ref.entity;
 }
 
 ecs_query_t ecsQueryCreate(ecs_t* ecs, uint64_t mask) {
@@ -117,19 +125,31 @@ bool ecsQueryValid(ecs_t* ecs, ecs_query_t* query) {
 }
 
 void ecsQueryNext(ecs_t* ecs, ecs_query_t* query) {
-	for (int x = query->entity + 1; x < _countof(ecs->components_mask); x++) {
-		if ((ecs->components_mask[x] & query->component_mask) == 
-			(query->component_mask && ecs->entity_states[x] >= ECS_ENTITY_ACTIVE)) {
+	for (int x = query->entity + 1; x < MAX_ENTITIES_ALLOWED; x++) {
+		if ((ecs->components_mask[x] & query->component_mask) == query->component_mask &&
+			ecs->entity_states[x] == ECS_ENTITY_ACTIVE) {
 			query->entity = x;
 			return;
 		}
 	}
-	debugPrint(DEBUG_PRINT_WARNING, "Unable to get the next query.");
 	query->entity = -1;
 }
 
 void* ecsQueryGetComponent(ecs_t* ecs, ecs_query_t* query, int component_type) {
-	return ecs->components[ecs->components[component_type].size * query->entity].data;
+	if ((query->component_mask & (1ULL << component_type)) == 0) {
+		return NULL;
+	}
+	return (char*)ecs->components[component_type].data +
+		ecs->components[component_type].size * query->entity;
+}
+
+int ecsComponentFind(ecs_t* ecs, const char* name) {
+	for (int x = 0; x < _countof(ecs->components); ++x) {
+		if (ecs->components[x].data && strcmp(ecs->components[x].name, name) == 0) {
+			return x;
+		}
+	}
+	return -1;
 }
 
 ecs_entity_t ecsQueryGetEntity(ecs_t* ecs, ecs_query_t* query) {

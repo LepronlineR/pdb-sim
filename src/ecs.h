@@ -36,6 +36,7 @@ void ecsUpdate(ecs_t* ecs);
 void ecsDestroy(ecs_t* ecs);
 
 int ecsComponentRegister(ecs_t* ecs, const char* name, size_t size, size_t alignment); 
+int ecsComponentFind(ecs_t* ecs, const char* name);
 size_t ecsComponentGetTypeSize(ecs_t* ecs, int component_type);
 
 ecs_entity_t ecsEntityAdd(ecs_t* ecs, uint64_t component_mask);
