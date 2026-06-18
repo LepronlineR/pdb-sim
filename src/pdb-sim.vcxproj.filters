@@ -1,6 +1,9 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
+	<ClCompile Include="ball.c">
+	  <Filter>Source Files\sys</Filter>
+	</ClCompile>
     <Filter Include="Source Files">
       <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
       <Extensions>cpp;c;cc;cxx;c++;cppm;ixx;def;odl;idl;hpj;bat;asm;asmx</Extensions>
@@ -54,6 +57,9 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
+	<ClInclude Include="ball.h">
+	  <Filter>Header Files\sys</Filter>
+	</ClInclude>
     <ClCompile Include="main.c">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -132,6 +138,15 @@
     <ClCompile Include="scene.c">
       <Filter>Source Files\sys</Filter>
     </ClCompile>
+    <ClCompile Include="ui.cpp">
+      <Filter>Source Files\sys</Filter>
+    </ClCompile>
+    <ClCompile Include="..\lib\imgui\imgui.cpp"><Filter>Source Files\lib</Filter></ClCompile>
+    <ClCompile Include="..\lib\imgui\imgui_draw.cpp"><Filter>Source Files\lib</Filter></ClCompile>
+    <ClCompile Include="..\lib\imgui\imgui_tables.cpp"><Filter>Source Files\lib</Filter></ClCompile>
+    <ClCompile Include="..\lib\imgui\imgui_widgets.cpp"><Filter>Source Files\lib</Filter></ClCompile>
+    <ClCompile Include="..\lib\imgui\backends\imgui_impl_win32.cpp"><Filter>Source Files\lib</Filter></ClCompile>
+    <ClCompile Include="..\lib\imgui\backends\imgui_impl_vulkan.cpp"><Filter>Source Files\lib</Filter></ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\lib\lz4\lz4.h">
@@ -218,6 +233,12 @@
     <ClInclude Include="component.h">
       <Filter>Header Files\sys</Filter>
     </ClInclude>
+    <ClInclude Include="ui.h"><Filter>Header Files\sys</Filter></ClInclude>
+    <ClInclude Include="..\lib\imgui\imconfig.h"><Filter>Header Files\lib</Filter></ClInclude>
+    <ClInclude Include="..\lib\imgui\imgui.h"><Filter>Header Files\lib</Filter></ClInclude>
+    <ClInclude Include="..\lib\imgui\imgui_internal.h"><Filter>Header Files\lib</Filter></ClInclude>
+    <ClInclude Include="..\lib\imgui\backends\imgui_impl_win32.h"><Filter>Header Files\lib</Filter></ClInclude>
+    <ClInclude Include="..\lib\imgui\backends\imgui_impl_vulkan.h"><Filter>Header Files\lib</Filter></ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="shaders\triangle.frag">
