@@ -1220,6 +1220,52 @@ void gpuCreateMeshLayouts(gpu_t* gpu) {
 	gpu->mesh_idx_type[GPU_MESH_LAYOUT_TRI_P444_C444_I2] = VK_INDEX_TYPE_UINT16;
 	gpu->mesh_idx_size[GPU_MESH_LAYOUT_TRI_P444_C444_I2] = 2;
 	gpu->mesh_vtx_size[GPU_MESH_LAYOUT_TRI_P444_C444_I2] = 24;
+
+	//
+	// ================== GPU_MESH_LAYOUT_TRI_P444_N444_C444_I2 ==================
+	//
+
+	gpu->mesh_input_asm_info[GPU_MESH_LAYOUT_TRI_P444_N444_C444_I2] = (VkPipelineInputAssemblyStateCreateInfo){
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+		.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
+	};
+
+	VkVertexInputBindingDescription* vertex_binding_p444_n444_c444_i2 = heapAlloc(gpu->heap, sizeof(VkVertexInputBindingDescription), 0);
+	vertex_binding_p444_n444_c444_i2->binding = 0;
+	vertex_binding_p444_n444_c444_i2->stride = 36;
+	vertex_binding_p444_n444_c444_i2->inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+	VkVertexInputAttributeDescription* vertex_attributes_p444_n444_c444_i2 = heapAlloc(gpu->heap, 3 * sizeof(VkVertexInputAttributeDescription), 8);
+	vertex_attributes_p444_n444_c444_i2[0] = (VkVertexInputAttributeDescription){
+		.binding = 0,
+		.location = 0,
+		.format = VK_FORMAT_R32G32B32_SFLOAT,
+		.offset = 0,
+	};
+	vertex_attributes_p444_n444_c444_i2[1] = (VkVertexInputAttributeDescription){
+		.binding = 0,
+		.location = 1,
+		.format = VK_FORMAT_R32G32B32_SFLOAT,
+		.offset = 12,
+	};
+	vertex_attributes_p444_n444_c444_i2[2] = (VkVertexInputAttributeDescription){
+		.binding = 0,
+		.location = 2,
+		.format = VK_FORMAT_R32G32B32_SFLOAT,
+		.offset = 24,
+	};
+
+	gpu->mesh_vtx_input_info[GPU_MESH_LAYOUT_TRI_P444_N444_C444_I2] = (VkPipelineVertexInputStateCreateInfo){
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+		.vertexBindingDescriptionCount = 1,
+		.pVertexBindingDescriptions = vertex_binding_p444_n444_c444_i2,
+		.vertexAttributeDescriptionCount = 3,
+		.pVertexAttributeDescriptions = vertex_attributes_p444_n444_c444_i2,
+	};
+
+	gpu->mesh_idx_type[GPU_MESH_LAYOUT_TRI_P444_N444_C444_I2] = VK_INDEX_TYPE_UINT16;
+	gpu->mesh_idx_size[GPU_MESH_LAYOUT_TRI_P444_N444_C444_I2] = 2;
+	gpu->mesh_vtx_size[GPU_MESH_LAYOUT_TRI_P444_N444_C444_I2] = 36;
 }
 
 void gpuDestroyMeshLayouts(gpu_t* gpu) {

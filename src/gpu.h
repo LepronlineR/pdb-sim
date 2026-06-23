@@ -25,6 +25,7 @@ typedef struct gpu_uniform_buffer_t gpu_uniform_buffer_t;
 typedef enum gpu_mesh_layout_t {
 	GPU_MESH_LAYOUT_TRI_P444_I2,
 	GPU_MESH_LAYOUT_TRI_P444_C444_I2,
+	GPU_MESH_LAYOUT_TRI_P444_N444_C444_I2,
 	GPU_MESH_LAYOUT_COUNT	// use this to track the total amount of mesh layouts (put it at the end)
 } gpu_mesh_layout_t;
 
