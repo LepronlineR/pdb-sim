@@ -39,7 +39,7 @@ ball_t* ballCreate(heap_t* heap, physics_t* physics, const ball_info_t* info) {
 	if (!ballCanCreate(physics)) return NULL;
 	ball_t* ball = heapAlloc(heap, sizeof(*ball), 8);
 	ball->heap = heap;
-	ball->vertices = heapAlloc(heap, sizeof(vec3f_t) * BALL_VERTEX_COUNT * 2, _Alignof(vec3f_t));
+	ball->vertices = heapAlloc(heap, sizeof(vec3f_t) * BALL_VERTEX_COUNT * 3, _Alignof(vec3f_t));
 	ball->indices = heapAlloc(heap, sizeof(uint16_t) * BALL_INDEX_COUNT, _Alignof(uint16_t));
 	ball->particles = heapAlloc(heap, sizeof(physics_body_t*) * BALL_VERTEX_COUNT,
 		_Alignof(physics_body_t*));
@@ -49,13 +49,14 @@ ball_t* ballCreate(heap_t* heap, physics_t* physics, const ball_info_t* info) {
 	const float particle_radius = info->radius * 0.015f;
 	const float collision_radius = info->radius * 0.08f;
 	for (int i = 0; i < BALL_VERTEX_COUNT; ++i) {
-		vec3f_t local = vec3fScale(ball->vertices[i * 2], info->radius);
+		vec3f_t local = vec3fScale(ball->vertices[i * 3], info->radius);
 		vec3f_t position = vec3fAdd(info->position, local);
 		ball->particles[i] = physicsAddBox(physics, position,
 			(vec3f_t){ particle_radius, particle_radius, particle_radius }, particle_mass, 0.0f);
 		physicsSetBodyCollisionRadius(ball->particles[i], collision_radius);
-		ball->vertices[i * 2] = position;
+		ball->vertices[i * 3] = position;
 	}
+	ballUpdateMesh(ball);
 	ballBuildConstraints(ball, physics, info);
 	return ball;
 }
@@ -69,8 +70,16 @@ void ballDestroy(ball_t* ball) {
 }
 
 void ballUpdateMesh(ball_t* ball) {
+	vec3f_t center = vec3fZero();
 	for (int i = 0; i < BALL_VERTEX_COUNT; ++i) {
-		ball->vertices[i * 2] = ball->particles[i]->position;
+		center = vec3fAdd(center, ball->particles[i]->position);
+	}
+	center = vec3fScale(center, 1.0f / (float)BALL_VERTEX_COUNT);
+
+	for (int i = 0; i < BALL_VERTEX_COUNT; ++i) {
+		vec3f_t position = ball->particles[i]->position;
+		ball->vertices[i * 3] = position;
+		ball->vertices[i * 3 + 1] = vec3fNorm(vec3fSub(position, center));
 	}
 }
 
@@ -144,14 +153,15 @@ void ballBuildMesh(ball_t* ball, vec3f_t color) {
 	}
 
 	for (int i = 0; i < BALL_VERTEX_COUNT; ++i) {
-		ball->vertices[i * 2] = positions[i];
-		ball->vertices[i * 2 + 1] = color;
+		ball->vertices[i * 3] = positions[i];
+		ball->vertices[i * 3 + 1] = positions[i];
+		ball->vertices[i * 3 + 2] = color;
 	}
 	for (int i = 0; i < BALL_INDEX_COUNT; ++i) ball->indices[i] = triangles_a[i];
-	ball->mesh.layout = GPU_MESH_LAYOUT_TRI_P444_C444_I2;
+	ball->mesh.layout = GPU_MESH_LAYOUT_TRI_P444_N444_C444_I2;
 	ball->mesh.dynamic = true;
 	ball->mesh.vtx_data = ball->vertices;
-	ball->mesh.vtx_data_size = sizeof(vec3f_t) * BALL_VERTEX_COUNT * 2;
+	ball->mesh.vtx_data_size = sizeof(vec3f_t) * BALL_VERTEX_COUNT * 3;
 	ball->mesh.idx_data = ball->indices;
 	ball->mesh.idx_data_size = sizeof(uint16_t) * BALL_INDEX_COUNT;
 
