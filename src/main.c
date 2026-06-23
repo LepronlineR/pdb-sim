@@ -17,7 +17,7 @@ int main(int argc, const char*argv[]) {
 
 	timerStartup();
 
-	heap_t* heap = heapCreate(128 * 1024 * 1024); // 128 MBs
+	heap_t* heap = heapCreate(256 * 1024 * 1024); // 256 MBs
 	wm_window_t* window = wmCreateWindow(heap);
 	ui_t* ui = uiCreate(heap, window);
 	fs_t* fs = fsCreate(heap, 8);
