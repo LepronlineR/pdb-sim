@@ -11,8 +11,7 @@ enum {
 	PHYSICS_MAX_VOLUME_CONSTRAINTS = 16,
 	PHYSICS_MAX_VOLUME_INDICES = 1536,
 	PHYSICS_CONTACT_HASH_SIZE = 1024,
-	PHYSICS_CONTACT_ITERATIONS = 2,
-	PHYSICS_SLEEP_FRAMES = 30
+	PHYSICS_CONTACT_ITERATIONS = 2
 };
 
 struct physics_distance_constraint_t {
@@ -36,10 +35,8 @@ struct physics_volume_constraint_t {
 	float rest_volume;
 	float compliance;
 	float velocity_retention;
-	float collision_envelope_radius;
 	float maximum_particle_radius;
 	float lambda;
-	int sleep_counter;
 };
 
 typedef struct physics_t {
@@ -52,6 +49,8 @@ typedef struct physics_t {
 	int volume_constraint_count;
 	int* contact_hash_heads;
 	int* contact_hash_next;
+	int* contact_hash_used;
+	int contact_hash_used_count;
 	int* contact_cell_x;
 	int* contact_cell_y;
 	int* contact_cell_z;
@@ -84,6 +83,8 @@ physics_t* physicsCreate(heap_t* heap) {
 		_Alignof(int));
 	phys->contact_hash_next = heapAlloc(heap, sizeof(int) * PHYSICS_MAX_BODIES,
 		_Alignof(int));
+	phys->contact_hash_used = heapAlloc(heap, sizeof(int) * PHYSICS_CONTACT_HASH_SIZE,
+		_Alignof(int));
 	phys->contact_cell_x = heapAlloc(heap, sizeof(int) * PHYSICS_MAX_BODIES,
 		_Alignof(int));
 	phys->contact_cell_y = heapAlloc(heap, sizeof(int) * PHYSICS_MAX_BODIES,
@@ -93,6 +94,10 @@ physics_t* physicsCreate(heap_t* heap) {
 	phys->body_count = 0;
 	phys->distance_constraint_count = 0;
 	phys->volume_constraint_count = 0;
+	phys->contact_hash_used_count = 0;
+	for (int i = 0; i < PHYSICS_CONTACT_HASH_SIZE; ++i) {
+		phys->contact_hash_heads[i] = -1;
+	}
 	phys->gravity = -9.81f;
 	phys->ground_height = 0.0f;
 	phys->ground_compliance = 0.0f;
@@ -111,6 +116,7 @@ void physicsDestroy(physics_t* physics) {
 		heapFree(physics->heap, physics->contact_cell_z);
 		heapFree(physics->heap, physics->contact_cell_y);
 		heapFree(physics->heap, physics->contact_cell_x);
+		heapFree(physics->heap, physics->contact_hash_used);
 		heapFree(physics->heap, physics->contact_hash_next);
 		heapFree(physics->heap, physics->contact_hash_heads);
 		heapFree(physics->heap, physics->volume_constraints);
@@ -132,7 +138,6 @@ physics_body_t* physicsAddBox(physics_t* physics, vec3f_t position,
 	body->inverse_mass = mass > 0.0f ? 1.0f / mass : 0.0f;
 	body->contact_lambda = 0.0f;
 	body->grounded = false;
-	body->sleeping = false;
 	(void)restitution;
 	return body;
 }
@@ -174,7 +179,6 @@ physics_volume_constraint_t* physicsAddVolumeConstraint(physics_t* physics,
 	constraint->compliance = __max(0.0f, compliance);
 	constraint->velocity_retention = 1.0f;
 	constraint->lambda = 0.0f;
-	constraint->sleep_counter = 0;
 	constraint->rest_volume = physicsCalculateVolume(constraint);
 	vec3f_t center = vec3fZero();
 	constraint->total_mass = 0.0f;
@@ -188,10 +192,6 @@ physics_volume_constraint_t* physicsAddVolumeConstraint(physics_t* physics,
 			bodies[i]->collision_radius);
 	}
 	center = vec3fScale(center, 1.0f / (float)body_count);
-	constraint->collision_envelope_radius = 0.0f;
-	for (int i = 0; i < body_count; ++i)
-		constraint->collision_envelope_radius = __max(constraint->collision_envelope_radius,
-			vec3fDistance(center, bodies[i]->position));
 	constraint->center = center;
 	return constraint;
 }
@@ -233,7 +233,7 @@ void physicsUpdate(physics_t* physics, float delta_seconds) {
 	/* XPBD prediction step (Algorithm 1 in the paper). */
 	for (int i = 0; i < physics->body_count; ++i) {
 		physics_body_t* body = &physics->bodies[i];
-		if (body->inverse_mass == 0.0f || body->sleeping) {
+		if (body->inverse_mass == 0.0f) {
 			body->previous_position = body->position;
 			continue;
 		}
@@ -290,7 +290,6 @@ void physicsUpdate(physics_t* physics, float delta_seconds) {
 	   velocity. Gravity therefore remains an unmodified 9.81 m/s^2. */
 	for (int constraint_idx = 0; constraint_idx < physics->volume_constraint_count; ++constraint_idx) {
 		physics_volume_constraint_t* constraint = &physics->volume_constraints[constraint_idx];
-		if (constraint->bodies[0]->sleeping) continue;
 		float total_mass = 0.0f;
 		vec3f_t center_velocity = vec3fZero();
 		for (int i = 0; i < constraint->body_count; ++i) {
@@ -309,34 +308,6 @@ void physicsUpdate(physics_t* physics, float delta_seconds) {
 				vec3fScale(relative, constraint->velocity_retention));
 		}
 	}
-	physicsUpdateSleepStates(physics);
-}
-
-void physicsWakeSoftBody(physics_volume_constraint_t* soft_body) {
-	soft_body->sleep_counter = 0;
-	for (int i = 0; i < soft_body->body_count; ++i)
-		soft_body->bodies[i]->sleeping = false;
-}
-
-void physicsUpdateSleepStates(physics_t* physics) {
-	const float sleep_speed_squared = 0.08f * 0.08f;
-	for (int group = 0; group < physics->volume_constraint_count; ++group) {
-		physics_volume_constraint_t* soft_body = &physics->volume_constraints[group];
-		if (soft_body->bodies[0]->sleeping) continue;
-		float mean_speed_squared = 0.0f;
-		for (int i = 0; i < soft_body->body_count; ++i)
-			mean_speed_squared += vec3fMagnitudeSqrd(soft_body->bodies[i]->velocity);
-		mean_speed_squared /= (float)soft_body->body_count;
-		if (mean_speed_squared > sleep_speed_squared) {
-			soft_body->sleep_counter = 0;
-			continue;
-		}
-		if (++soft_body->sleep_counter < PHYSICS_SLEEP_FRAMES) continue;
-		for (int i = 0; i < soft_body->body_count; ++i) {
-			soft_body->bodies[i]->velocity = vec3fZero();
-			soft_body->bodies[i]->sleeping = true;
-		}
-	}
 }
 
 void physicsDampSoftBodyContactVelocities(physics_t* physics) {
@@ -345,9 +316,6 @@ void physicsDampSoftBodyContactVelocities(physics_t* physics) {
 		for (int group_b = group_a + 1; group_b < physics->volume_constraint_count; ++group_b) {
 			physics_volume_constraint_t* soft_b = &physics->volume_constraints[group_b];
 			if (!physicsSoftBodiesOverlap(soft_a, soft_b)) continue;
-			if (soft_a->bodies[0]->sleeping && soft_b->bodies[0]->sleeping) continue;
-			if (soft_a->bodies[0]->sleeping) physicsWakeSoftBody(soft_a);
-			if (soft_b->bodies[0]->sleeping) physicsWakeSoftBody(soft_b);
 			vec3f_t velocity_a = vec3fZero();
 			vec3f_t velocity_b = vec3fZero();
 			for (int i = 0; i < soft_a->body_count; ++i) {
@@ -415,49 +383,20 @@ void physicsSolveSoftBodyContacts(physics_t* physics) {
 		for (int group_b = group_a + 1; group_b < physics->volume_constraint_count; ++group_b) {
 			physics_volume_constraint_t* soft_b = &physics->volume_constraints[group_b];
 			if (!physicsSoftBodiesOverlap(soft_a, soft_b)) continue;
-			if (soft_a->bodies[0]->sleeping && soft_b->bodies[0]->sleeping) continue;
-			if (soft_a->bodies[0]->sleeping) physicsWakeSoftBody(soft_a);
-			if (soft_b->bodies[0]->sleeping) physicsWakeSoftBody(soft_b);
-
-			/* A swept frame can cross a thin vertex contact. Keep a coarse rest-shape
-			   envelope as the CCD fallback, then let particle contacts create the
-			   visible local deformation. */
-			vec3f_t center_delta = vec3fSub(soft_a->center, soft_b->center);
-			float center_distance = vec3fMagnitude(center_delta);
-			float envelope_distance = soft_a->collision_envelope_radius +
-				soft_b->collision_envelope_radius;
-			if (center_distance < envelope_distance) {
-				vec3f_t normal = center_distance > 1.0e-6f ?
-					vec3fScale(center_delta, 1.0f / center_distance) : vec3fY();
-				float inverse_mass_a = 1.0f / soft_a->total_mass;
-				float inverse_mass_b = 1.0f / soft_b->total_mass;
-				float correction = (envelope_distance - center_distance) /
-					(inverse_mass_a + inverse_mass_b);
-				vec3f_t offset_a = vec3fScale(normal, correction * inverse_mass_a);
-				vec3f_t offset_b = vec3fScale(normal, correction * inverse_mass_b);
-				for (int i = 0; i < soft_a->body_count; ++i)
-					soft_a->bodies[i]->position = vec3fAdd(soft_a->bodies[i]->position, offset_a);
-				for (int i = 0; i < soft_b->body_count; ++i)
-					soft_b->bodies[i]->position = vec3fSub(soft_b->bodies[i]->position, offset_b);
-				soft_a->center = vec3fAdd(soft_a->center, offset_a);
-				soft_a->bounds_min = vec3fAdd(soft_a->bounds_min, offset_a);
-				soft_a->bounds_max = vec3fAdd(soft_a->bounds_max, offset_a);
-				soft_b->center = vec3fSub(soft_b->center, offset_b);
-				soft_b->bounds_min = vec3fSub(soft_b->bounds_min, offset_b);
-				soft_b->bounds_max = vec3fSub(soft_b->bounds_max, offset_b);
-			}
 			float cell_size = __max(soft_a->maximum_particle_radius,
 				soft_b->maximum_particle_radius) * 2.0f;
 			if (cell_size <= 0.0f) continue;
 
-			for (int i = 0; i < PHYSICS_CONTACT_HASH_SIZE; ++i)
-				physics->contact_hash_heads[i] = -1;
+			physics->contact_hash_used_count = 0;
 			for (int b_index = 0; b_index < soft_b->body_count; ++b_index) {
 				vec3f_t position = soft_b->bodies[b_index]->position;
 				int cell_x = (int)floorf(position.x / cell_size);
 				int cell_y = (int)floorf(position.y / cell_size);
 				int cell_z = (int)floorf(position.z / cell_size);
 				uint32_t hash = physicsContactHash(cell_x, cell_y, cell_z);
+				if (physics->contact_hash_heads[hash] == -1) {
+					physics->contact_hash_used[physics->contact_hash_used_count++] = hash;
+				}
 				physics->contact_cell_x[b_index] = cell_x;
 				physics->contact_cell_y[b_index] = cell_y;
 				physics->contact_cell_z[b_index] = cell_z;
@@ -501,6 +440,10 @@ void physicsSolveSoftBodyContacts(physics_t* physics) {
 				}
 				}
 			}
+
+			for (int i = 0; i < physics->contact_hash_used_count; ++i) {
+				physics->contact_hash_heads[physics->contact_hash_used[i]] = -1;
+			}
 		}
 	}
 }
@@ -508,7 +451,6 @@ void physicsSolveSoftBodyContacts(physics_t* physics) {
 void physicsSolveDistanceConstraint(physics_distance_constraint_t* constraint, float inverse_dt_squared) {
 	physics_body_t* a = constraint->body_a;
 	physics_body_t* b = constraint->body_b;
-	if (a->sleeping && b->sleeping) return;
 	const float inverse_mass_sum = a->inverse_mass + b->inverse_mass;
 	vec3f_t delta = vec3fSub(a->position, b->position);
 	const float length = vec3fMagnitude(delta);
@@ -538,7 +480,6 @@ float physicsCalculateVolume(physics_volume_constraint_t* constraint) {
 }
 
 void physicsSolveVolumeConstraint(physics_volume_constraint_t* constraint, float inverse_dt_squared) {
-	if (constraint->bodies[0]->sleeping) return;
 	vec3f_t* gradients = constraint->gradients;
 	for (int i = 0; i < constraint->body_count; ++i) gradients[i] = vec3fZero();
 	float volume = 0.0f;
@@ -575,7 +516,7 @@ void physicsSolveVolumeConstraint(physics_volume_constraint_t* constraint, float
 }
 
 void physicsSolveGroundConstraint(physics_t* physics, physics_body_t* body, float inverse_dt_squared) {
-	if (body->inverse_mass == 0.0f || body->sleeping) {
+	if (body->inverse_mass == 0.0f) {
 		return;
 	}
 	const float constraint_value = body->position.y - body->half_extents.y - physics->ground_height;

@@ -18,7 +18,6 @@ typedef struct physics_body_t {
 	float inverse_mass;
 	float contact_lambda;
 	bool grounded;
-	bool sleeping;
 } physics_body_t;
 
 typedef struct physics_distance_constraint_t physics_distance_constraint_t;
@@ -55,8 +54,6 @@ void physicsSolveGroundConstraint(physics_t* physics, physics_body_t* body,
 void physicsSolveSoftBodyContacts(physics_t* physics);
 void physicsDampSoftBodyContactVelocities(physics_t* physics);
 void physicsUpdateSoftBodyBounds(physics_t* physics);
-void physicsUpdateSleepStates(physics_t* physics);
-void physicsWakeSoftBody(physics_volume_constraint_t* soft_body);
 bool physicsSoftBodiesOverlap(physics_volume_constraint_t* a,
 	physics_volume_constraint_t* b);
 float physicsCalculateVolume(physics_volume_constraint_t* constraint);
