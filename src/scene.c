@@ -9,6 +9,7 @@
 #include "heap.h"
 #include "physics.h"
 #include "renderer.h"
+#include "shader_loader.h"
 #include "timer_object.h"
 #include "ui.h"
 #include "vec3f.h"
@@ -35,11 +36,19 @@ typedef struct scene_t {
 	int name_type;
 	ecs_entity_t camera_entity;
 
+	shader_loader_t* shaders;
 	gpu_mesh_info_t cube_mesh;
-	gpu_shader_info_t cube_shader;
-	fs_work_t* vert_shader_work;
-	fs_work_t* frag_shader_work;
 } scene_t;
+
+typedef struct scene_draw_uniform_t {
+	mat4f_t projection;
+	mat4f_t model;
+	mat4f_t view;
+	float camera_position_roughness[4];
+	float light_direction_metallic[4];
+	float light_color_ambient[4];
+	float material[4];
+} scene_draw_uniform_t;
 
 scene_t* sceneCreate(heap_t* heap, fs_t* fs, wm_window_t* window, renderer_t* render) {
 	scene_t* scene = heapAlloc(heap, sizeof(*scene), 8);
@@ -105,15 +114,7 @@ void sceneUpdate(scene_t* scene) {
 }
 
 void sceneLoadResources(scene_t* scene) {
-	scene->vert_shader_work = fsRead(scene->fs, "shaders/triangle.vert.spv", scene->heap, false, false);
-	scene->frag_shader_work = fsRead(scene->fs, "shaders/triangle.frag.spv", scene->heap, false, false);
-	scene->cube_shader = (gpu_shader_info_t){
-		.vtx_shader_data = fsWorkGetBuffer(scene->vert_shader_work),
-		.vtx_shader_size = fsWorkGetSize(scene->vert_shader_work),
-		.frag_shader_data = fsWorkGetBuffer(scene->frag_shader_work),
-		.frag_shader_size = fsWorkGetSize(scene->frag_shader_work),
-		.uniform_buffer_count = 1
-	};
+	scene->shaders = shaderLoaderCreate(scene->heap, scene->fs);
 	static vec3f_t vertices[] = {
 		{-1,-1, 1},{.18f,.42f,.62f}, {1,-1, 1},{.18f,.42f,.62f},
 		{ 1, 1, 1},{.18f,.42f,.62f},{-1, 1, 1},{.18f,.42f,.62f},
@@ -134,8 +135,7 @@ void sceneLoadResources(scene_t* scene) {
 }
 
 void sceneUnloadResources(scene_t* scene) {
-	fsWorkDestroy(scene->vert_shader_work);
-	fsWorkDestroy(scene->frag_shader_work);
+	shaderLoaderDestroy(scene->shaders);
 }
 
 void sceneSpawnCamera(scene_t* scene) {
@@ -158,6 +158,18 @@ void sceneSpawnCamera(scene_t* scene) {
 	camera->orbit_pitch = asinf(offset.y / camera->orbit_distance);
 }
 
+static vec3f_t sceneCameraGetEye(const camera_component_t* camera) {
+	float horizontal_distance = cosf(camera->orbit_pitch) * camera->orbit_distance;
+	vec3f_t center = {
+		camera->orbit_target[0], camera->orbit_target[1], camera->orbit_target[2]
+	};
+	return (vec3f_t){
+		center.x + sinf(camera->orbit_yaw) * horizontal_distance,
+		center.y + sinf(camera->orbit_pitch) * camera->orbit_distance,
+		center.z + cosf(camera->orbit_yaw) * horizontal_distance
+	};
+}
+
 void sceneUpdateCamera(scene_t* scene) {
 	int mouse_x = 0;
 	int mouse_y = 0;
@@ -171,15 +183,10 @@ void sceneUpdateCamera(scene_t* scene) {
 	camera->orbit_yaw -= (float)mouse_x * 0.008f;
 	camera->orbit_pitch -= (float)mouse_y * 0.008f;
 	camera->orbit_pitch = __max(-1.45f, __min(1.45f, camera->orbit_pitch));
-	float horizontal_distance = cosf(camera->orbit_pitch) * camera->orbit_distance;
 	vec3f_t center = {
 		camera->orbit_target[0], camera->orbit_target[1], camera->orbit_target[2]
 	};
-	vec3f_t eye = {
-		center.x + sinf(camera->orbit_yaw) * horizontal_distance,
-		center.y + sinf(camera->orbit_pitch) * camera->orbit_distance,
-		center.z + cosf(camera->orbit_yaw) * horizontal_distance
-	};
+	vec3f_t eye = sceneCameraGetEye(camera);
 	vec3f_t up = vec3fUp();
 	mat4fMakeLookAt(&camera->view, &eye, &center, &up);
 }
@@ -196,7 +203,7 @@ ecs_entity_t sceneSpawnModel(scene_t* scene, const char* name_text,
 	transform->transform.translation = position;
 	transform->transform.scale = scale;
 	model->mesh_info = mesh;
-	model->shader_info = &scene->cube_shader;
+	model->shader_info = shaderLoaderGetFlat(scene->shaders);
 	model->owned_resource = NULL;
 	model->update_resource = NULL;
 	model->destroy_resource = NULL;
@@ -212,6 +219,7 @@ void sceneSpawnBall(scene_t* scene, physics_t* physics, const char* name, ball_i
 	model->owned_resource = ball;
 	model->update_resource = sceneBallResourceUpdate;
 	model->destroy_resource = sceneBallResourceDestroy;
+	model->shader_info = shaderLoaderGetPbr(scene->shaders);
 }
 
 void sceneSpawnDemo(scene_t* scene, physics_t* physics) {
@@ -291,16 +299,33 @@ void sceneDrawModels(scene_t* scene) {
 	for (ecs_query_t camera_query = ecsQueryCreate(scene->ecs, camera_mask);
 		ecsQueryValid(scene->ecs, &camera_query); ecsQueryNext(scene->ecs, &camera_query)) {
 		camera_component_t* camera = ecsQueryGetComponent(scene->ecs, &camera_query, scene->camera_type);
+		vec3f_t camera_position = sceneCameraGetEye(camera);
 		uint64_t model_mask = (1ULL << scene->transform_type) | (1ULL << scene->model_type);
 		for (ecs_query_t query = ecsQueryCreate(scene->ecs, model_mask);
 			ecsQueryValid(scene->ecs, &query); ecsQueryNext(scene->ecs, &query)) {
 			transform_component_t* transform = ecsQueryGetComponent(scene->ecs, &query, scene->transform_type);
 			model_component_t* model = ecsQueryGetComponent(scene->ecs, &query, scene->model_type);
 			ecs_entity_t entity = ecsQueryGetEntity(scene->ecs, &query);
-			struct { mat4f_t projection, model, view; } data;
+			scene_draw_uniform_t data;
 			data.projection = camera->projection;
 			data.view = camera->view;
 			transformConvertToMatrix(&transform->transform, &data.model);
+			data.camera_position_roughness[0] = camera_position.x;
+			data.camera_position_roughness[1] = camera_position.y;
+			data.camera_position_roughness[2] = camera_position.z;
+			data.camera_position_roughness[3] = 0.72f;
+			data.light_direction_metallic[0] = 0.35f;
+			data.light_direction_metallic[1] = -0.82f;
+			data.light_direction_metallic[2] = 0.45f;
+			data.light_direction_metallic[3] = 0.0f;
+			data.light_color_ambient[0] = 4.6f;
+			data.light_color_ambient[1] = 4.2f;
+			data.light_color_ambient[2] = 3.6f;
+			data.light_color_ambient[3] = 0.045f;
+			data.material[0] = 1.0f;
+			data.material[1] = 1.0f;
+			data.material[2] = 1.0f;
+			data.material[3] = 1.0f;
 			gpu_uniform_buffer_info_t uniform = {.data=&data, .size=sizeof(data)};
 			rendererModelAdd(scene->render, &entity, model->mesh_info, model->shader_info, &uniform);
 		}

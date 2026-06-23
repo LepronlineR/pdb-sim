@@ -162,6 +162,7 @@
     <ClCompile Include="renderer.c" />
     <ClCompile Include="scene.c" />
     <ClCompile Include="semaphore.c" />
+    <ClCompile Include="shader_loader.c" />
     <ClCompile Include="test.c" />
     <ClCompile Include="thread.c" />
     <ClCompile Include="timer.c" />
@@ -220,6 +221,7 @@
     <ClInclude Include="renderer.h" />
     <ClInclude Include="scene.h" />
     <ClInclude Include="semaphore.h" />
+    <ClInclude Include="shader_loader.h" />
     <ClInclude Include="test.h" />
     <ClInclude Include="thread.h" />
     <ClInclude Include="timer.h" />
@@ -240,6 +242,10 @@
     <None Include="shaders\triangle.frag.spv" />
     <None Include="shaders\triangle.vert" />
     <None Include="shaders\triangle.vert.spv" />
+    <None Include="shaders\pbr.frag" />
+    <None Include="shaders\pbr.frag.spv" />
+    <None Include="shaders\pbr.vert" />
+    <None Include="shaders\pbr.vert.spv" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
