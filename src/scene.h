@@ -4,6 +4,23 @@
 #include "ball.h"
 #include "cloth.h"
 #include "ecs.h"
+#include "ui.h"
+
+/*		SCENE
+*
+*	Works like a game-engine editor scene. The scene holds authored objects (balls
+*	and cloths with their settings) and is in one of three modes:
+*
+*	  Edit     nothing simulates; adding, moving, editing and deleting objects
+*	           changes the authored scene
+*	  Playing  the physics world steps; objects added or deleted now are only
+*	           runtime changes
+*	  Paused   playing, but frozen (Step advances one frame)
+*
+*	Stop returns to Edit and rebuilds the world from the authored objects, so the
+*	scene is exactly as it was before Play. The physics world is append-only, so
+*	every structural change (delete, edit, stop) rebuilds it from the objects.
+*/
 
 typedef struct scene_t scene_t;
 
@@ -14,7 +31,8 @@ typedef struct scene_pointer_t {
 	int y;
 	int width;
 	int height;
-	bool grab_held;
+	bool select_held;  // left button: a press and release without dragging selects
+	bool grab_held;    // right button: move (edit) or grab (play)
 } scene_pointer_t;
 
 typedef struct fs_t fs_t;
@@ -34,23 +52,29 @@ void sceneUnloadResources(scene_t* scene);
 void sceneSpawnCamera(scene_t* scene);
 ecs_entity_t sceneSpawnModel(scene_t* scene, const char* name,
 	vec3f_t position, vec3f_t scale, gpu_mesh_info_t* mesh);
-void sceneSpawnBall(scene_t* scene, physics_t* physics, const char* name,
-	ball_info_t info);
-void sceneSpawnCloth(scene_t* scene, physics_t* physics, const char* name,
-	cloth_info_t info);
-void sceneSpawnDemo(scene_t* scene, physics_t* physics);
-void sceneUpdateComponents(scene_t* scene);
 void sceneUpdateCamera(scene_t* scene);
 void sceneUpdateInteraction(scene_t* scene);
+void sceneUpdateSimulation(scene_t* scene);
+void sceneDrawModels(scene_t* scene);
+
 // Replaces window input for picking while set; NULL returns to the window.
 void sceneSetPointerOverride(scene_t* scene, const scene_pointer_t* pointer);
+
+// Queries for scripted tests.
+//
+// Number of objects present in the current mode (hidden ones excluded).
+int sceneGetObjectCount(scene_t* scene);
+// Id of the selected object, or -1.
+int sceneGetSelectedId(scene_t* scene);
+// ui_play_mode_t of the scene.
+int sceneGetMode(scene_t* scene);
 // Number of particles currently held by the pointer.
 int sceneGetGrabbedCount(scene_t* scene);
-void sceneDestroyOwnedComponents(scene_t* scene);
-void sceneDrawModels(scene_t* scene);
-void sceneBallResourceUpdate(void* resource);
-void sceneBallResourceDestroy(void* resource);
-void sceneClothResourceUpdate(void* resource);
-void sceneClothResourceDestroy(void* resource);
+// Copies an object's editable settings, as the inspector sees them.
+//
+// RETURN: false if no object has that id
+bool sceneGetObjectProperties(scene_t* scene, int id, ui_object_properties_t* properties);
+// A hash of every particle position, to check that Stop restores the scene.
+uint64_t sceneHashParticles(scene_t* scene);
 
 #endif

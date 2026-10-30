@@ -110,6 +110,11 @@ float ballGetMaxCircumradius(ball_t* ball) {
 	return max_radius;
 }
 
+void ballGetParticles(ball_t* ball, physics_particle_id_t* first_particle, int* particle_count) {
+	*first_particle = ball->first_particle;
+	*particle_count = BALL_VERTEX_COUNT;
+}
+
 gpu_mesh_info_t* ballGetMesh(ball_t* ball) {
 	return &ball->mesh;
 }

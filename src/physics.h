@@ -34,6 +34,12 @@ vec3f_t physicsGetParticlePosition(physics_t* physics, physics_particle_id_t par
 vec3f_t physicsGetParticleVelocity(physics_t* physics, physics_particle_id_t particle);
 void physicsSetParticleVelocity(physics_t* physics, physics_particle_id_t particle,
 	vec3f_t velocity);
+// Teleports a particle: its previous position moves too, so no velocity results.
+void physicsSetParticlePosition(physics_t* physics, physics_particle_id_t particle,
+	vec3f_t position);
+// Teleports a run of particles by the same offset.
+void physicsTranslateParticles(physics_t* physics, physics_particle_id_t first_particle,
+	int particle_count, vec3f_t offset);
 float physicsGetParticleRadius(physics_t* physics, physics_particle_id_t particle);
 // All particle positions, indexed by id. Valid until the next physicsUpdate.
 const vec3f_t* physicsGetParticlePositions(physics_t* physics);

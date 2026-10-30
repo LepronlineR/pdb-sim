@@ -988,6 +988,21 @@ void physicsSetParticleVelocity(physics_t* physics, physics_particle_id_t partic
 	physics->velocities[particle] = velocity;
 }
 
+void physicsSetParticlePosition(physics_t* physics, physics_particle_id_t particle,
+	vec3f_t position) {
+	physics->positions[particle] = position;
+	physics->previous_positions[particle] = position;
+}
+
+void physicsTranslateParticles(physics_t* physics, physics_particle_id_t first_particle,
+	int particle_count, vec3f_t offset) {
+	for (int i = 0; i < particle_count; ++i) {
+		const physics_particle_id_t particle = first_particle + (physics_particle_id_t)i;
+		physics->positions[particle] = vec3fAdd(physics->positions[particle], offset);
+		physics->previous_positions[particle] = physics->positions[particle];
+	}
+}
+
 float physicsGetParticleRadius(physics_t* physics, physics_particle_id_t particle) {
 	return physics->radii[particle];
 }
