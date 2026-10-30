@@ -175,6 +175,11 @@ int rendererThreadFunc(void* ID) {
 			case RENDERER_COMMAND_DRAW_MODEL: { // draw the model
 				command_model_t* model = (command_model_t*) command_type;
 				draw_shader_t* shader = rendererShaderModelCommand(render, model);
+				if (!shader->shader || !shader->pipeline) {
+					heapFree(render->heap, model->uniform_buffer.data);
+					if (model->dynamic_vtx_data) heapFree(render->heap, model->dynamic_vtx_data);
+					break;
+				}
 				draw_mesh_t* mesh = rendererMeshModelCommand(render, model);
 				draw_instance_t* instance = rendererInstanceModelCommand(render, model, shader->shader);
 
@@ -234,7 +239,9 @@ draw_shader_t* rendererShaderModelCommand(renderer_t* render, command_model_t* c
 		shader->shader = gpuCreateShader(render->gpu, shader->info);
 	}
 
-	if (shader->pipeline == NULL) {
+	/* A shader that failed to load (missing .spv) has no pipeline; the caller
+	   skips models that use it rather than building one from nothing. */
+	if (shader->shader != NULL && shader->pipeline == NULL) {
 		gpu_pipeline_info_t pipeline_info = {
 			.shader = shader->shader,
 			.mesh_layout = command->mesh_layout

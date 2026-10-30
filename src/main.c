@@ -11,6 +11,7 @@
 #include "debug.h"
 
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 /* --smoke: drives the real app through an editor workflow with scripted input and
@@ -290,6 +291,29 @@ static bool smokeTestStep(smoke_test_t* smoke, scene_t* scene, ui_t* ui, wm_wind
 	return f < 610;
 }
 
+/* Shaders are loaded relative to the working directory (src/). Launching the exe
+   from Explorer or its build folder starts it elsewhere, so look in the working
+   directory, then beside the exe and up to three folders above it, and switch
+   to the first one that has the shaders. */
+static bool findShaderDirectory(void) {
+	const char* probe = "shaders\\pbr.vert.spv";
+	if (GetFileAttributesA(probe) != INVALID_FILE_ATTRIBUTES) return true;
+	char directory[MAX_PATH];
+	const DWORD length = GetModuleFileNameA(NULL, directory, MAX_PATH);
+	if (length == 0 || length >= MAX_PATH) return false;
+	for (int up = 0; up < 4; ++up) {
+		char* slash = strrchr(directory, '\\');
+		if (!slash) return false;
+		*slash = '\0';  // drop the file name, then one folder per pass
+		char candidate[MAX_PATH];
+		if (sprintf_s(candidate, sizeof(candidate), "%s\\%s", directory, probe) > 0 &&
+			GetFileAttributesA(candidate) != INVALID_FILE_ATTRIBUTES) {
+			return SetCurrentDirectoryA(directory) != 0;
+		}
+	}
+	return false;
+}
+
 int main(int argc, const char*argv[]) {
 
 	debugInstallExceptionHandler();
@@ -308,6 +332,13 @@ int main(int argc, const char*argv[]) {
 		}
 		smoke_mode = smoke_mode || strcmp(argv[i], "--smoke") == 0;
 		demo_mode = demo_mode || strcmp(argv[i], "--demo") == 0;
+	}
+	if (!findShaderDirectory()) {
+		MessageBoxA(NULL, "Could not find the shaders folder (shaders\\pbr.vert.spv).\n\n"
+			"Run pdb-sim.exe from the project's src folder, or keep it inside the src folder tree.",
+			"XPBD Sim", MB_OK | MB_ICONERROR);
+		heapDestroy(heap);
+		return 1;
 	}
 	wm_window_t* window = wmCreateWindow(heap);
 	ui_t* ui = uiCreate(heap, window);
