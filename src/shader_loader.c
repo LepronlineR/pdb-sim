@@ -17,10 +17,11 @@ typedef struct shader_loader_t {
 	fs_t* fs;
 	shader_asset_t flat;
 	shader_asset_t pbr;
+	shader_asset_t skybox;
 } shader_loader_t;
 
 static void shaderLoaderLoadAsset(shader_loader_t* loader, shader_asset_t* asset,
-	const char* vertex_path, const char* fragment_path) {
+	const char* vertex_path, const char* fragment_path, int texture_count, bool background) {
 	asset->vertex_work = fsRead(loader->fs, vertex_path, loader->heap, false, false);
 	asset->fragment_work = fsRead(loader->fs, fragment_path, loader->heap, false, false);
 	asset->info = (gpu_shader_info_t){
@@ -28,7 +29,9 @@ static void shaderLoaderLoadAsset(shader_loader_t* loader, shader_asset_t* asset
 		.vtx_shader_size = fsWorkGetSize(asset->vertex_work),
 		.frag_shader_data = fsWorkGetBuffer(asset->fragment_work),
 		.frag_shader_size = fsWorkGetSize(asset->fragment_work),
-		.uniform_buffer_count = 1
+		.uniform_buffer_count = 1,
+		.texture_count = texture_count,
+		.background = background
 	};
 }
 
@@ -44,9 +47,11 @@ shader_loader_t* shaderLoaderCreate(heap_t* heap, fs_t* fs) {
 	loader->fs = fs;
 
 	shaderLoaderLoadAsset(loader, &loader->flat,
-		"shaders/triangle.vert.spv", "shaders/triangle.frag.spv");
+		"shaders/triangle.vert.spv", "shaders/triangle.frag.spv", 0, false);
 	shaderLoaderLoadAsset(loader, &loader->pbr,
-		"shaders/pbr.vert.spv", "shaders/pbr.frag.spv");
+		"shaders/pbr.vert.spv", "shaders/pbr.frag.spv", 1, false);
+	shaderLoaderLoadAsset(loader, &loader->skybox,
+		"shaders/skybox.vert.spv", "shaders/skybox.frag.spv", 1, true);
 
 	return loader;
 }
@@ -55,6 +60,7 @@ void shaderLoaderDestroy(shader_loader_t* loader) {
 	if (!loader) return;
 	shaderLoaderUnloadAsset(&loader->flat);
 	shaderLoaderUnloadAsset(&loader->pbr);
+	shaderLoaderUnloadAsset(&loader->skybox);
 	heapFree(loader->heap, loader);
 }
 
@@ -64,4 +70,8 @@ gpu_shader_info_t* shaderLoaderGetFlat(shader_loader_t* loader) {
 
 gpu_shader_info_t* shaderLoaderGetPbr(shader_loader_t* loader) {
 	return &loader->pbr.info;
+}
+
+gpu_shader_info_t* shaderLoaderGetSkybox(shader_loader_t* loader) {
+	return &loader->skybox.info;
 }

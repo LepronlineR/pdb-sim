@@ -73,6 +73,10 @@ int sceneGetGrabbedCount(scene_t* scene);
 // Copies an object's editable settings, as the inspector sees them.
 //
 // RETURN: false if no object has that id
+// Number of textures that loaded (see texture_library.h).
+int sceneGetTextureCount(scene_t* scene);
+// Whether the sky panorama is drawn this frame.
+bool sceneIsSkyVisible(scene_t* scene);
 bool sceneGetObjectProperties(scene_t* scene, int id, ui_object_properties_t* properties);
 // Client-pixel position of an object's authored position.
 //

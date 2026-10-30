@@ -12,7 +12,8 @@ int atomicDec(int* address){
 }
 
 int atomicCompareAssign(int* address, int value, int new_value){
-	return InterlockedCompareExchange(address, value, new_value);
+	// InterlockedCompareExchange(destination, exchange, comparand)
+	return InterlockedCompareExchange(address, new_value, value);
 }
 
 int atomicRead(int* address){

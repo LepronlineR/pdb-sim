@@ -12,6 +12,7 @@
 #include "physics.h"
 #include "renderer.h"
 #include "shader_loader.h"
+#include "texture_library.h"
 #include "timer.h"
 #include "timer_object.h"
 #include "ui.h"
@@ -38,6 +39,8 @@
 /* Resolution of the shared unit-sphere mesh used to draw sphere colliders. */
 #define SCENE_SPHERE_SEGMENTS 40
 #define SCENE_SPHERE_RINGS 20
+/* Texture repeats across the ground's top face (24 m wide): one every 2 m. */
+#define SCENE_GROUND_UV_SCALE 12.0f
 
 enum {
 	SCENE_MAX_OBJECTS = UI_MAX_OBJECTS
@@ -66,6 +69,13 @@ typedef struct scene_sphere_info_t {
 	float radius;
 } scene_sphere_info_t;
 
+/* How an object's surface is drawn. Visual only: editing it never changes the
+   simulation. */
+typedef struct scene_material_t {
+	texture_id_t texture;
+	float uv_scale;  // texture repeats per unit of the mesh's uvs
+} scene_material_t;
+
 /* An authored object. The settings are the source of truth; the resource,
    mesh and particle range are runtime data rebuilt with the physics world. */
 typedef struct scene_object_t {
@@ -75,6 +85,7 @@ typedef struct scene_object_t {
 	ball_info_t ball;
 	cloth_info_t cloth;
 	scene_sphere_info_t sphere;
+	scene_material_t material;
 	bool transient;  // added during play: removed on Stop
 	bool hidden;     // deleted during play: restored on Stop
 	ecs_entity_t entity;
@@ -103,10 +114,17 @@ typedef struct scene_t {
 	ecs_entity_t physics_entity;
 
 	shader_loader_t* shaders;
-	gpu_mesh_info_t cube_mesh;
+	texture_library_t* textures;
+	gpu_mesh_info_t cube_mesh;    // positions only matter: the sky box
+	gpu_mesh_info_t ground_mesh;  // a box with per-face normals and uvs
+	gpu_vertex_t ground_vertices[24];
+	uint16_t ground_indices[36];
 	gpu_mesh_info_t sphere_mesh;
-	vec3f_t* sphere_vertices;
+	gpu_vertex_t* sphere_vertices;
 	uint16_t* sphere_indices;
+	ecs_entity_t sky_entity;
+	ecs_entity_t ground_entity;
+	ui_environment_settings_t environment;
 	// width / height of the window's client area, used by projection and picking
 	float aspect_ratio;
 
@@ -152,10 +170,12 @@ typedef struct scene_draw_uniform_t {
 	float light_direction_metallic[4];
 	float light_color_ambient[4];
 	float material[4];
+	float texture_params[4];  // model_component_t.texture_params
 } scene_draw_uniform_t;
 
 static void sceneBuildSphereMesh(scene_t* scene);
 static void sceneUpdateGizmo(scene_t* scene);
+static void sceneUpdateEnvironment(scene_t* scene, ui_t* ui);
 
 static physics_world_component_t* sceneGetWorld(scene_t* scene) {
 	return ecsEntityGet(scene->ecs, scene->physics_entity, scene->physics_type, true);
@@ -196,6 +216,8 @@ static void sceneObjectUpdateModel(scene_t* scene, scene_object_t* object) {
 		scene->transform_type, true);
 	if (!model || !transform) return;
 	model->mesh_info = object->mesh;
+	model->texture = textureLibraryGet(scene->textures, object->material.texture);
+	model->texture_params[0] = object->material.uv_scale;
 	transformIdentity(&transform->transform);
 	model->tint[0] = model->tint[1] = model->tint[2] = 1.0f;
 	if (object->kind == SCENE_OBJECT_SPHERE) {
@@ -353,6 +375,10 @@ static scene_object_t* sceneAddObject(scene_t* scene, scene_object_kind_t kind,
 	if (ball) object->ball = *ball;
 	if (cloth) object->cloth = *cloth;
 	if (sphere) object->sphere = *sphere;
+	/* Cloth shows the checker by default so its folds read clearly. */
+	object->material = (scene_material_t){
+		kind == SCENE_OBJECT_CLOTH ? TEXTURE_CHECKER : TEXTURE_NONE, 1.0f
+	};
 	object->transient = scene->mode != SCENE_MODE_EDIT;
 	strcpy_s(object->name, sizeof(object->name), name);
 
@@ -462,8 +488,8 @@ static void sceneLoadDrapeDemo(scene_t* scene) {
 	};
 	sceneAddObject(scene, SCENE_OBJECT_SPHERE, NULL, NULL, &sphere, "Sphere");
 	cloth_info_t cloth = clothInfoDefault((vec3f_t){ 0, 3.6f, 0 }, (vec3f_t){ .80f, .22f, .26f });
-	cloth.resolution = 40;
-	cloth.size = 3.4f;
+	cloth.resolution = 48;
+	cloth.size = 4.4f;
 	cloth.pin = CLOTH_PIN_NONE;
 	sceneAddObject(scene, SCENE_OBJECT_CLOTH, NULL, &cloth, NULL, "Tablecloth");
 	scene->sphere_counter = 1;
@@ -540,6 +566,8 @@ static ui_object_properties_t sceneObjectProperties(const scene_object_t* object
 		p.pin = (int)c->pin;
 		p.pin_count = clothInfoCountPins(c);
 	}
+	p.texture = (int)object->material.texture;
+	p.uv_scale = object->material.uv_scale;
 	return p;
 }
 
@@ -551,6 +579,8 @@ static void sceneEditObject(scene_t* scene, const ui_object_properties_t* p) {
 	const vec3f_t position = { p->position[0], p->position[1], p->position[2] };
 	const vec3f_t color = { p->color[0], p->color[1], p->color[2] };
 	sceneObjectSetPosition(object, position);
+	object->material.texture = (texture_id_t)__max(TEXTURE_NONE, __min(p->texture, TEXTURE_SKY - 1));
+	object->material.uv_scale = __max(0.1f, __min(20.0f, p->uv_scale));
 	if (object->kind == SCENE_OBJECT_BALL) {
 		ball_info_t* b = &object->ball;
 		b->color = color;
@@ -696,7 +726,15 @@ scene_t* sceneCreate(heap_t* heap, fs_t* fs, wm_window_t* window, renderer_t* re
 
 	sceneLoadResources(scene);
 	sceneSpawnCamera(scene);
-	sceneSpawnModel(scene, "ground", (vec3f_t){0,-.1f,0}, (vec3f_t){12,.1f,12}, &scene->cube_mesh);
+	scene->sky_entity = sceneSpawnModel(scene, "sky", vec3fZero(), vec3fOne(), NULL);
+	model_component_t* sky = ecsEntityGet(scene->ecs, scene->sky_entity, scene->model_type, true);
+	sky->shader_info = shaderLoaderGetSkybox(scene->shaders);
+	scene->ground_entity = sceneSpawnModel(scene, "ground", (vec3f_t){0,-.1f,0},
+		(vec3f_t){12,.1f,12}, &scene->ground_mesh);
+	model_component_t* ground = ecsEntityGet(scene->ecs, scene->ground_entity, scene->model_type, true);
+	ground->shader_info = shaderLoaderGetPbr(scene->shaders);
+	ground->texture_params[0] = SCENE_GROUND_UV_SCALE;
+	sceneUpdateEnvironment(scene, uiGet(scene->window));
 	scene->gizmo_hover_axis = -1;
 	scene->gizmo_drag_axis = -1;
 	for (int part = 0; part < 6; ++part) {
@@ -727,12 +765,74 @@ void sceneUpdate(scene_t* scene) {
 	sceneUpdateInteraction(scene);
 	sceneUpdateGizmo(scene);
 	sceneUpdateSimulation(scene);
+	sceneUpdateEnvironment(scene, uiGet(scene->window));
 	sceneDrawModels(scene);
 	rendererFrameDone(scene->render);
 }
 
+/* Applies the Environment panel: the sky's visibility, exposure and rotation,
+   and the ground's texture (the ground keeps its plain color without one). */
+static void sceneUpdateEnvironment(scene_t* scene, ui_t* ui) {
+	scene->environment = uiGetEnvironmentSettings(ui);
+	const ui_environment_settings_t* environment = &scene->environment;
+	model_component_t* sky = ecsEntityGet(scene->ecs, scene->sky_entity, scene->model_type, true);
+	sky->texture = textureLibraryGet(scene->textures, TEXTURE_SKY);
+	sky->mesh_info = environment->sky && sky->texture ? &scene->cube_mesh : NULL;
+	sky->texture_params[0] = environment->sky_exposure;
+	sky->texture_params[1] = environment->sky_rotation * (float)M_PI / 180.0f;
+
+	model_component_t* ground = ecsEntityGet(scene->ecs, scene->ground_entity, scene->model_type, true);
+	const texture_id_t ground_texture = (texture_id_t)__max(TEXTURE_NONE,
+		__min(environment->ground_texture, TEXTURE_SKY - 1));
+	ground->texture = textureLibraryGet(scene->textures, ground_texture);
+	static const float plain_ground[3] = { .18f, .42f, .62f };
+	for (int k = 0; k < 3; ++k) ground->tint[k] = ground->texture ? 1.0f : plain_ground[k];
+}
+
+/* A box from -1 to 1 with four vertices per face, so each face has its own
+   normal and a full 0..1 uv square. Faces wind counter-clockwise seen from
+   outside, like the other meshes. */
+static void sceneBuildGroundMesh(scene_t* scene) {
+	/* normal, then the face's u and v axes (u x v = normal) */
+	static const float faces[6][3][3] = {
+		{ { 1,0,0 }, { 0,0,-1 }, { 0,1,0 } }, { { -1,0,0 }, { 0,0,1 }, { 0,1,0 } },
+		{ { 0,1,0 }, { 1,0,0 }, { 0,0,-1 } }, { { 0,-1,0 }, { 1,0,0 }, { 0,0,1 } },
+		{ { 0,0,1 }, { 1,0,0 }, { 0,1,0 } }, { { 0,0,-1 }, { -1,0,0 }, { 0,1,0 } }
+	};
+	static const float corners[4][2] = { { -1,-1 }, { 1,-1 }, { 1,1 }, { -1,1 } };
+	for (int face = 0; face < 6; ++face) {
+		const float* n = faces[face][0];
+		const float* a = faces[face][1];
+		const float* b = faces[face][2];
+		for (int corner = 0; corner < 4; ++corner) {
+			const float s = corners[corner][0];
+			const float t = corners[corner][1];
+			gpu_vertex_t* vertex = &scene->ground_vertices[face * 4 + corner];
+			for (int k = 0; k < 3; ++k) {
+				vertex->position[k] = n[k] + s * a[k] + t * b[k];
+				vertex->normal[k] = n[k];
+				vertex->color[k] = 1.0f;
+			}
+			vertex->uv[0] = (s + 1.0f) * 0.5f;
+			vertex->uv[1] = (t + 1.0f) * 0.5f;
+		}
+		static const uint16_t quad[6] = { 0, 1, 2, 2, 3, 0 };
+		for (int k = 0; k < 6; ++k) {
+			scene->ground_indices[face * 6 + k] = (uint16_t)(face * 4 + quad[k]);
+		}
+	}
+	scene->ground_mesh = (gpu_mesh_info_t){
+		.layout = GPU_MESH_LAYOUT_TRI_P444_N444_C444_U44_I2,
+		.vtx_data = scene->ground_vertices,
+		.vtx_data_size = sizeof(scene->ground_vertices),
+		.idx_data = scene->ground_indices,
+		.idx_data_size = sizeof(scene->ground_indices)
+	};
+}
+
 void sceneLoadResources(scene_t* scene) {
 	scene->shaders = shaderLoaderCreate(scene->heap, scene->fs);
+	scene->textures = textureLibraryCreate(scene->heap, scene->fs);
 	static vec3f_t vertices[] = {
 		{-1,-1, 1},{.18f,.42f,.62f}, {1,-1, 1},{.18f,.42f,.62f},
 		{ 1, 1, 1},{.18f,.42f,.62f},{-1, 1, 1},{.18f,.42f,.62f},
@@ -750,17 +850,19 @@ void sceneLoadResources(scene_t* scene) {
 		.idx_data = indices,
 		.idx_data_size = sizeof(indices)
 	};
+	sceneBuildGroundMesh(scene);
 	sceneBuildSphereMesh(scene);
 }
 
-/* A unit UV sphere: position, normal and white color per vertex. Triangles are
+/* A unit UV sphere: position, normal, white color and uv per vertex; the uvs
+   wrap twice around so texels stay square. Triangles are
    wound like the ball mesh so their outsides are front faces. */
 static void sceneBuildSphereMesh(scene_t* scene) {
 	const int columns = SCENE_SPHERE_SEGMENTS + 1;
 	const int vertex_count = (SCENE_SPHERE_RINGS + 1) * columns;
 	const int index_count = SCENE_SPHERE_RINGS * SCENE_SPHERE_SEGMENTS * 6;
-	scene->sphere_vertices = heapAlloc(scene->heap, sizeof(vec3f_t) * 3 * vertex_count,
-		_Alignof(vec3f_t));
+	scene->sphere_vertices = heapAlloc(scene->heap, sizeof(gpu_vertex_t) * vertex_count,
+		_Alignof(gpu_vertex_t));
 	scene->sphere_indices = heapAlloc(scene->heap, sizeof(uint16_t) * index_count,
 		_Alignof(uint16_t));
 	for (int ring = 0; ring <= SCENE_SPHERE_RINGS; ++ring) {
@@ -769,9 +871,13 @@ static void sceneBuildSphereMesh(scene_t* scene) {
 			const float phi = 2.0f * (float)M_PI * (float)segment / (float)SCENE_SPHERE_SEGMENTS;
 			const vec3f_t p = { sinf(theta) * cosf(phi), cosf(theta), sinf(theta) * sinf(phi) };
 			const int v = ring * columns + segment;
-			scene->sphere_vertices[v * 3] = p;
-			scene->sphere_vertices[v * 3 + 1] = p;
-			scene->sphere_vertices[v * 3 + 2] = vec3fOne();
+			scene->sphere_vertices[v] = (gpu_vertex_t){
+				.position = { p.x, p.y, p.z },
+				.normal = { p.x, p.y, p.z },
+				.color = { 1.0f, 1.0f, 1.0f },
+				.uv = { 2.0f * (float)segment / (float)SCENE_SPHERE_SEGMENTS,
+					(float)ring / (float)SCENE_SPHERE_RINGS }
+			};
 		}
 	}
 	int index = 0;
@@ -788,9 +894,9 @@ static void sceneBuildSphereMesh(scene_t* scene) {
 		}
 	}
 	scene->sphere_mesh = (gpu_mesh_info_t){
-		.layout = GPU_MESH_LAYOUT_TRI_P444_N444_C444_I2,
+		.layout = GPU_MESH_LAYOUT_TRI_P444_N444_C444_U44_I2,
 		.vtx_data = scene->sphere_vertices,
-		.vtx_data_size = sizeof(vec3f_t) * 3 * vertex_count,
+		.vtx_data_size = sizeof(gpu_vertex_t) * vertex_count,
 		.idx_data = scene->sphere_indices,
 		.idx_data_size = sizeof(uint16_t) * index_count
 	};
@@ -798,6 +904,7 @@ static void sceneBuildSphereMesh(scene_t* scene) {
 
 void sceneUnloadResources(scene_t* scene) {
 	shaderLoaderDestroy(scene->shaders);
+	textureLibraryDestroy(scene->textures);
 	heapFree(scene->heap, scene->sphere_indices);
 	heapFree(scene->heap, scene->sphere_vertices);
 }
@@ -1331,6 +1438,15 @@ int sceneGetGrabbedCount(scene_t* scene) {
 	return physicsGetStats(sceneGetPhysics(scene)).grabbed_count;
 }
 
+int sceneGetTextureCount(scene_t* scene) {
+	return textureLibraryLoadedCount(scene->textures);
+}
+
+bool sceneIsSkyVisible(scene_t* scene) {
+	const model_component_t* sky = ecsEntityGet(scene->ecs, scene->sky_entity, scene->model_type, true);
+	return sky->mesh_info != NULL;
+}
+
 bool sceneGetObjectProperties(scene_t* scene, int id, ui_object_properties_t* properties) {
 	const scene_object_t* object = sceneFindObject(scene, id);
 	if (!object) return false;
@@ -1409,8 +1525,10 @@ void sceneDrawModels(scene_t* scene) {
 			data.material[1] = model->tint[1] * (highlighted ? 1.5f : 1.0f);
 			data.material[2] = model->tint[2] * (highlighted ? 1.1f : 1.0f);
 			data.material[3] = 1.0f;
+			memcpy(data.texture_params, model->texture_params, sizeof(data.texture_params));
 			gpu_uniform_buffer_info_t uniform = {.data=&data, .size=sizeof(data)};
-			rendererModelAdd(scene->render, &entity, model->mesh_info, model->shader_info, &uniform);
+			rendererModelAdd(scene->render, &entity, model->mesh_info, model->shader_info,
+				model->texture, &uniform);
 		}
 	}
 }

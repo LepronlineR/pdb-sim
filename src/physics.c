@@ -4,6 +4,7 @@
 #include "semaphore.h"
 #include "thread.h"
 #include "atomic.h"
+#include "timer.h"
 
 #include <assert.h>
 #include <float.h>
@@ -38,7 +39,10 @@ enum {
 	PHYSICS_MAX_WORKERS = 8,
 	/* Per-particle loops are a few multiply-adds; below this many per thread,
 	   waking workers costs more than it saves. */
-	PHYSICS_MIN_PARTICLE_WORK_PER_THREAD = 8192
+	PHYSICS_MIN_PARTICLE_WORK_PER_THREAD = 8192,
+	/* The pair search costs ~100-250 ns per candidate (14 cells to scan), so a
+	   few hundred per thread are worth a worker wake-up. */
+	PHYSICS_MIN_PAIR_SEARCH_PER_THREAD = 256
 };
 
 #define PHYSICS_GROUND (-1)
@@ -49,7 +53,9 @@ enum {
    a fast flick does not inject a huge impulse. */
 #define PHYSICS_GRAB_COMPLIANCE 1.0e-5f
 
-typedef void (*physics_parallel_func_t)(physics_t* physics, int start, int end,
+/* Runs items [start, end). chunk is this call's index among the dispatch's
+   chunks (0 .. worker count - 1), for writing to per-chunk outputs. */
+typedef void (*physics_parallel_func_t)(physics_t* physics, int start, int end, int chunk,
 	float delta_seconds, float inverse_dt_squared);
 
 typedef struct physics_worker_t {
@@ -87,6 +93,12 @@ typedef struct physics_soft_body_t {
 	float volume_compliance;
 	float volume_lambda;
 } physics_soft_body_t;
+
+/* A particle pair found by the parallel pair search, before it becomes a contact. */
+typedef struct physics_pair_t {
+	int particle_a;
+	int particle_b;
+} physics_pair_t;
 
 /* A non-penetration constraint between two particles, or between a particle and
    fixed geometry (the ground plane or a sphere collider) when particle_b is
@@ -139,6 +151,12 @@ typedef struct physics_t {
 	int* grid_candidates;
 	/* How far each particle can move this frame, padding its contact search. */
 	float* grid_travel;
+	/* Pair search, run in parallel over contiguous runs of candidates: each
+	   chunk writes its pairs to its own buffer, and the buffers are appended in
+	   chunk order, giving the same contact order as a serial search. */
+	float grid_margin;
+	physics_pair_t* pair_buffers[PHYSICS_MAX_WORKERS];
+	int pair_counts[PHYSICS_MAX_WORKERS];
 	/* Particles held by the mouse: each is pulled toward grab_target plus its
 	   offset at the moment it was grabbed. */
 	physics_particle_id_t grabbed_particles[PHYSICS_MAX_GRABBED_PARTICLES];
@@ -169,6 +187,7 @@ typedef struct physics_t {
 	semaphore_t* worker_done;
 	thread_t* worker_threads[PHYSICS_MAX_WORKERS - 1];
 	physics_worker_t workers[PHYSICS_MAX_WORKERS];
+	physics_profile_t profile;
 } physics_t;
 
 static int physicsWorkerFunc(void* user);
@@ -176,11 +195,11 @@ static void physicsDestroyWorkers(physics_t* physics);
 static void physicsParallelFor(physics_t* physics, int count, int min_items_per_thread,
 	physics_parallel_func_t func, float delta_seconds, float inverse_dt_squared);
 static void physicsRunParallelChunk(physics_t* physics);
-static void physicsPredictRange(physics_t* physics, int start, int end,
+static void physicsPredictRange(physics_t* physics, int start, int end, int chunk,
 	float delta_seconds, float inverse_dt_squared);
-static void physicsSolveIslandsRange(physics_t* physics, int start, int end,
+static void physicsSolveIslandsRange(physics_t* physics, int start, int end, int chunk,
 	float delta_seconds, float inverse_dt_squared);
-static void physicsReconstructVelocitiesRange(physics_t* physics, int start, int end,
+static void physicsReconstructVelocitiesRange(physics_t* physics, int start, int end, int chunk,
 	float delta_seconds, float inverse_dt_squared);
 static void physicsResetLambdas(physics_t* physics);
 static int physicsDistanceIsland(physics_t* physics,
@@ -256,7 +275,7 @@ static void physicsParallelFor(physics_t* physics, int count, int min_items_per_
 		(count + min_items_per_thread - 1) / min_items_per_thread);
 	worker_count = __max(1, worker_count);
 	if (worker_count <= 1 || physics->worker_start == NULL || physics->worker_done == NULL) {
-		func(physics, 0, count, delta_seconds, inverse_dt_squared);
+		func(physics, 0, count, 0, delta_seconds, inverse_dt_squared);
 		return;
 	}
 
@@ -289,12 +308,13 @@ static void physicsRunParallelChunk(physics_t* physics) {
 		physics->parallel_worker_count;
 	const int end = (physics->parallel_count * (worker_index + 1)) /
 		physics->parallel_worker_count;
-	physics->parallel_func(physics, start, end, physics->parallel_delta_seconds,
+	physics->parallel_func(physics, start, end, worker_index, physics->parallel_delta_seconds,
 		physics->parallel_inverse_dt_squared);
 }
 
-static void physicsPredictRange(physics_t* physics, int start, int end,
+static void physicsPredictRange(physics_t* physics, int start, int end, int chunk,
 	float delta_seconds, float inverse_dt_squared) {
+	(void)chunk;
 	(void)inverse_dt_squared;
 	vec3f_t* positions = physics->positions;
 	vec3f_t* velocities = physics->velocities;
@@ -311,8 +331,9 @@ static void physicsPredictRange(physics_t* physics, int start, int end,
 
 /* Each island is one soft body: its own distance constraints followed by its
    volume constraint. Islands touch disjoint particles, so they run in parallel. */
-static void physicsSolveIslandsRange(physics_t* physics, int start, int end,
+static void physicsSolveIslandsRange(physics_t* physics, int start, int end, int chunk,
 	float delta_seconds, float inverse_dt_squared) {
+	(void)chunk;
 	(void)delta_seconds;
 	for (int i = start; i < end; ++i) {
 		physicsSolveDistanceIsland(physics, i, inverse_dt_squared);
@@ -332,8 +353,9 @@ static void physicsSolveDistanceIsland(physics_t* physics, int island,
 	}
 }
 
-static void physicsReconstructVelocitiesRange(physics_t* physics, int start, int end,
+static void physicsReconstructVelocitiesRange(physics_t* physics, int start, int end, int chunk,
 	float delta_seconds, float inverse_dt_squared) {
+	(void)chunk;
 	(void)inverse_dt_squared;
 	const float inverse_dt = 1.0f / delta_seconds;
 	for (int i = start; i < end; ++i) {
@@ -492,6 +514,59 @@ static void physicsAddContact(physics_t* physics, int particle_a, int particle_b
 	contact->normal_speed_before = 0.0f;
 }
 
+/* Half-shell search: a particle's own cell plus the 13 neighbours "ahead" of
+   it. Two particles in different cells see each other from exactly one side,
+   so every pair is found once. Reads the grid only; writes pairs to the
+   chunk's buffer. */
+static void physicsFindPairsRange(physics_t* physics, int start, int end, int chunk,
+	float delta_seconds, float inverse_dt_squared) {
+	(void)delta_seconds;
+	(void)inverse_dt_squared;
+	static const int forward[14][3] = {
+		{ 0, 0, 0 },
+		{ 1, 0, 0 },
+		{ -1, 1, 0 }, { 0, 1, 0 }, { 1, 1, 0 },
+		{ -1, -1, 1 }, { 0, -1, 1 }, { 1, -1, 1 },
+		{ -1, 0, 1 }, { 0, 0, 1 }, { 1, 0, 1 },
+		{ -1, 1, 1 }, { 0, 1, 1 }, { 1, 1, 1 }
+	};
+	const vec3f_t* positions = physics->positions;
+	const float* radii = physics->radii;
+	const float* inverse_masses = physics->inverse_masses;
+	const float* travel = physics->grid_travel;
+	const int* cell = physics->grid_cell;
+	const int* grid_start = physics->grid_start;
+	const float margin = physics->grid_margin;
+	physics_pair_t* pairs = physics->pair_buffers[chunk];
+	int pair_count = 0;
+	for (int c = start; c < end; ++c) {
+		const int i = physics->grid_candidates[c];
+		const int owner = physics->particle_owner[i];
+		const bool self_collision = owner >= 0 && physics->soft_bodies[owner].self_collision;
+		for (int n = 0; n < 14; ++n) {
+			const int x = cell[i * 3] + forward[n][0];
+			const int y = cell[i * 3 + 1] + forward[n][1];
+			const int z = cell[i * 3 + 2] + forward[n][2];
+			const uint32_t hash = physicsGridHash(x, y, z);
+			for (int k = grid_start[hash]; k < grid_start[hash + 1]; ++k) {
+				const int j = physics->grid_entries[k];
+				/* In the own cell, j > i keeps each pair once. The cell check drops
+				   entries that only share the bucket. */
+				if ((n == 0 && j <= i) || cell[j * 3] != x || cell[j * 3 + 1] != y ||
+					cell[j * 3 + 2] != z) continue;
+				if (owner >= 0 && owner == physics->particle_owner[j] && !self_collision) continue;
+				if (inverse_masses[i] + inverse_masses[j] == 0.0f) continue;
+				const float reach = radii[i] + radii[j] + __min(travel[i] + travel[j], margin);
+				if (vec3fMagnitudeSqrd(vec3fSub(positions[i], positions[j])) < reach * reach &&
+					pair_count < PHYSICS_MAX_CONTACTS) {
+					pairs[pair_count++] = (physics_pair_t){ i, j };
+				}
+			}
+		}
+	}
+	physics->pair_counts[chunk] = pair_count;
+}
+
 /* Collects every pair that could touch during the next delta_seconds, so the
    substeps only solve a fixed list. Pairs inside one soft body are skipped unless
    it collides with itself (cloth); otherwise its own constraints keep its
@@ -604,39 +679,14 @@ static void physicsDetectContacts(physics_t* physics, float delta_seconds) {
 		physics->grid_entries[--start[hash]] = i;
 	}
 
-	/* Half-shell search: a particle's own cell plus the 13 neighbours "ahead" of
-	   it. Two particles in different cells see each other from exactly one side,
-	   so every pair is found once. */
-	static const int forward[14][3] = {
-		{ 0, 0, 0 },
-		{ 1, 0, 0 },
-		{ -1, 1, 0 }, { 0, 1, 0 }, { 1, 1, 0 },
-		{ -1, -1, 1 }, { 0, -1, 1 }, { 1, -1, 1 },
-		{ -1, 0, 1 }, { 0, 0, 1 }, { 1, 0, 1 },
-		{ -1, 1, 1 }, { 0, 1, 1 }, { 1, 1, 1 }
-	};
-	for (int c = 0; c < candidate_count; ++c) {
-		const int i = candidates[c];
-		const int owner = physics->particle_owner[i];
-		const bool self_collision = owner >= 0 && physics->soft_bodies[owner].self_collision;
-		for (int n = 0; n < 14; ++n) {
-			const int x = cell[i * 3] + forward[n][0];
-			const int y = cell[i * 3 + 1] + forward[n][1];
-			const int z = cell[i * 3 + 2] + forward[n][2];
-			const uint32_t hash = physicsGridHash(x, y, z);
-			for (int k = start[hash]; k < start[hash + 1]; ++k) {
-				const int j = physics->grid_entries[k];
-				/* In the own cell, j > i keeps each pair once. The cell check drops
-				   entries that only share the bucket. */
-				if ((n == 0 && j <= i) || cell[j * 3] != x || cell[j * 3 + 1] != y ||
-					cell[j * 3 + 2] != z) continue;
-				if (owner >= 0 && owner == physics->particle_owner[j] && !self_collision) continue;
-				if (inverse_masses[i] + inverse_masses[j] == 0.0f) continue;
-				const float reach = radii[i] + radii[j] + __min(travel[i] + travel[j], margin);
-				if (vec3fMagnitudeSqrd(vec3fSub(positions[i], positions[j])) < reach * reach) {
-					physicsAddContact(physics, i, j);
-				}
-			}
+	physics->grid_margin = margin;
+	for (int chunk = 0; chunk < PHYSICS_MAX_WORKERS; ++chunk) physics->pair_counts[chunk] = 0;
+	physicsParallelFor(physics, candidate_count, PHYSICS_MIN_PAIR_SEARCH_PER_THREAD,
+		physicsFindPairsRange, 0.0f, 0.0f);
+	for (int chunk = 0; chunk < PHYSICS_MAX_WORKERS; ++chunk) {
+		const physics_pair_t* pairs = physics->pair_buffers[chunk];
+		for (int k = 0; k < physics->pair_counts[chunk]; ++k) {
+			physicsAddContact(physics, pairs[k].particle_a, pairs[k].particle_b);
 		}
 	}
 }
@@ -940,6 +990,10 @@ physics_t* physicsCreate(heap_t* heap) {
 	phys->grid_cell = heapAlloc(heap, sizeof(int) * 3 * PHYSICS_MAX_PARTICLES, _Alignof(int));
 	phys->grid_candidates = heapAlloc(heap, sizeof(int) * PHYSICS_MAX_PARTICLES, _Alignof(int));
 	phys->grid_travel = heapAlloc(heap, sizeof(float) * PHYSICS_MAX_PARTICLES, _Alignof(float));
+	for (int chunk = 0; chunk < PHYSICS_MAX_WORKERS; ++chunk) {
+		phys->pair_buffers[chunk] = heapAlloc(heap, sizeof(physics_pair_t) * PHYSICS_MAX_CONTACTS,
+			_Alignof(physics_pair_t));
+	}
 	phys->gravity = -9.81f;
 	phys->substeps = 8;
 	phys->solver_iterations = 1;
@@ -979,6 +1033,9 @@ void physicsDestroy(physics_t* physics) {
 				heapFree(physics->heap, physics->soft_bodies[i].indices);
 				heapFree(physics->heap, physics->soft_bodies[i].gradients);
 			}
+		}
+		for (int chunk = 0; chunk < PHYSICS_MAX_WORKERS; ++chunk) {
+			heapFree(physics->heap, physics->pair_buffers[chunk]);
 		}
 		heapFree(physics->heap, physics->grid_travel);
 		heapFree(physics->heap, physics->grid_candidates);
@@ -1251,6 +1308,14 @@ bool physicsHasCapacity(physics_t* physics, int particle_count,
 		physics->soft_body_count + soft_body_count <= PHYSICS_MAX_SOFT_BODIES;
 }
 
+physics_profile_t physicsGetProfile(physics_t* physics) {
+	return physics->profile;
+}
+
+static float physicsTicksToMs(uint64_t ticks) {
+	return (float)((double)ticks * 1000.0 / (double)timerGetTicksPerSecond());
+}
+
 physics_stats_t physicsGetStats(physics_t* physics) {
 	return (physics_stats_t){
 		.particle_count = physics->particle_count,
@@ -1265,10 +1330,19 @@ void physicsUpdate(physics_t* physics, float delta_seconds) {
 	if (delta_seconds <= 0.0f) {
 		return;
 	}
+	/* Phase timings for physicsGetProfile: a timer read is ~20 ns, against
+	   phases of tens of microseconds and up. */
+	uint64_t ticks[6] = { 0 };
+	const uint64_t update_start = timerGetTicks();
+	uint64_t mark = update_start;
+#define PHYSICS_PROFILE_MARK(phase) do { const uint64_t now = timerGetTicks(); \
+		ticks[phase] += now - mark; mark = now; } while (0)
+
 	if (physics->distance_islands_dirty) {
 		physicsBuildDistanceIslands(physics);
 	}
 	physicsDetectContacts(physics, delta_seconds);
+	PHYSICS_PROFILE_MARK(0);
 
 	const float substep_seconds = delta_seconds / (float)physics->substeps;
 	const float inverse_dt_squared = 1.0f / (substep_seconds * substep_seconds);
@@ -1277,26 +1351,42 @@ void physicsUpdate(physics_t* physics, float delta_seconds) {
 		physicsParallelFor(physics, physics->particle_count, PHYSICS_MIN_PARTICLE_WORK_PER_THREAD,
 			physicsPredictRange, substep_seconds, 0.0f);
 		physicsResetLambdas(physics);
+		PHYSICS_PROFILE_MARK(3);
 
 		for (int iteration = 0; iteration < physics->solver_iterations; ++iteration) {
 			/* Constraints that span soft bodies (the last island) go first, serially. */
 			physicsSolveDistanceIsland(physics, island_count, inverse_dt_squared);
 			if (physics->soft_bodies_overlap) {
-				physicsSolveIslandsRange(physics, 0, island_count, 0.0f, inverse_dt_squared);
+				physicsSolveIslandsRange(physics, 0, island_count, 0, 0.0f, inverse_dt_squared);
 			}
 			else {
 				physicsParallelFor(physics, island_count, 1,
 					physicsSolveIslandsRange, 0.0f, inverse_dt_squared);
 			}
+			PHYSICS_PROFILE_MARK(1);
 			physicsSolveContacts(physics, inverse_dt_squared);
 			physicsSolveGrab(physics, inverse_dt_squared);
+			PHYSICS_PROFILE_MARK(2);
 		}
 
 		physicsParallelFor(physics, physics->particle_count, PHYSICS_MIN_PARTICLE_WORK_PER_THREAD,
 			physicsReconstructVelocitiesRange, substep_seconds, 0.0f);
+		PHYSICS_PROFILE_MARK(3);
 		/* Per substep, not per frame: an impact lasts only a few substeps, and
 		   damping once per frame lets most of its energy bounce back. */
 		physicsSolveContactVelocities(physics, substep_seconds);
+		PHYSICS_PROFILE_MARK(4);
 		physicsDampenDeformation(physics, substep_seconds);
+		PHYSICS_PROFILE_MARK(5);
 	}
+#undef PHYSICS_PROFILE_MARK
+	physics->profile = (physics_profile_t){
+		.detect_ms = physicsTicksToMs(ticks[0]),
+		.constraints_ms = physicsTicksToMs(ticks[1]),
+		.contacts_ms = physicsTicksToMs(ticks[2]),
+		.integrate_ms = physicsTicksToMs(ticks[3]),
+		.velocity_ms = physicsTicksToMs(ticks[4]),
+		.damping_ms = physicsTicksToMs(ticks[5]),
+		.total_ms = physicsTicksToMs(timerGetTicks() - update_start)
+	};
 }

@@ -17,8 +17,8 @@ typedef struct cloth_t {
 	heap_t* heap;
 	physics_t* physics;
 	gpu_mesh_info_t mesh;
-	/* Two copies of the sheet, front then back, each vertex position/normal/color. */
-	vec3f_t* vertices;
+	/* Two copies of the sheet, front then back. */
+	gpu_vertex_t* vertices;
 	vec3f_t* normals;
 	uint16_t* indices;
 	int resolution;
@@ -50,7 +50,9 @@ cloth_info_t clothInfoDefault(vec3f_t center, vec3f_t color) {
 		.mass = 1.0f,
 		.stretch_compliance = 1.0e-7f,
 		.shear_compliance = 1.0e-6f,
-		.bend_compliance = 5.0e-2f,
+		/* Soft: bending is skip-one distance constraints, which also resist
+		   compression, so a stiffer value keeps cloth from folding and draping. */
+		.bend_compliance = 1.0f,
 		.velocity_retention = 0.6f,
 		.drag = 0.4f,
 		.pin = CLOTH_PIN_CORNERS
@@ -110,7 +112,7 @@ cloth_t* clothCreate(heap_t* heap, physics_t* physics, const cloth_info_t* info)
 	cloth->heap = heap;
 	cloth->physics = physics;
 	cloth->resolution = n;
-	cloth->vertices = heapAlloc(heap, sizeof(vec3f_t) * vertex_count * 2 * 3, _Alignof(vec3f_t));
+	cloth->vertices = heapAlloc(heap, sizeof(gpu_vertex_t) * vertex_count * 2, _Alignof(gpu_vertex_t));
 	cloth->normals = heapAlloc(heap, sizeof(vec3f_t) * vertex_count, _Alignof(vec3f_t));
 	cloth->indices = heapAlloc(heap, sizeof(uint16_t) * index_count, _Alignof(uint16_t));
 
@@ -197,26 +199,30 @@ cloth_t* clothCreate(heap_t* heap, physics_t* physics, const cloth_info_t* info)
 		}
 	}
 	assert(index == index_count);
-	/* A two-tone check every few particles makes folds and sag readable; pinned
-	   particles stand out in a dark contrasting color. */
-	const int check = __max(1, n / 8);
+	/* The uvs span the sheet once, so a texture (the checker by default) makes
+	   folds and sag readable; pinned particles stand out in a dark color. */
 	const vec3f_t pin_color = { 0.08f, 0.08f, 0.10f };
 	for (int z = 0; z < n; ++z) {
 		for (int x = 0; x < n; ++x) {
 			const int i = z * n + x;
-			const float shade = ((x / check + z / check) & 1) ? 0.78f : 1.0f;
-			const vec3f_t color = clothInfoIsPinned(info, x, z) ? pin_color :
-				vec3fScale(info->color, shade);
-			cloth->vertices[i * 3 + 2] = color;
-			cloth->vertices[(vertex_count + i) * 3 + 2] = vec3fScale(color, 0.7f);
+			const vec3f_t color = clothInfoIsPinned(info, x, z) ? pin_color : info->color;
+			const vec3f_t back = vec3fScale(color, 0.7f);
+			const float u = (float)x / (float)(n - 1);
+			const float v = (float)z / (float)(n - 1);
+			cloth->vertices[i] = (gpu_vertex_t){
+				.color = { color.x, color.y, color.z }, .uv = { u, v }
+			};
+			cloth->vertices[vertex_count + i] = (gpu_vertex_t){
+				.color = { back.x, back.y, back.z }, .uv = { u, v }
+			};
 		}
 	}
 
-	cloth->mesh.layout = GPU_MESH_LAYOUT_TRI_P444_N444_C444_I2;
+	cloth->mesh.layout = GPU_MESH_LAYOUT_TRI_P444_N444_C444_U44_I2;
 	cloth->mesh.dynamic = true;
 	cloth->mesh.id = gpuMeshInfoNextId();
 	cloth->mesh.vtx_data = cloth->vertices;
-	cloth->mesh.vtx_data_size = sizeof(vec3f_t) * vertex_count * 2 * 3;
+	cloth->mesh.vtx_data_size = sizeof(gpu_vertex_t) * vertex_count * 2;
 	cloth->mesh.idx_data = cloth->indices;
 	cloth->mesh.idx_data_size = sizeof(uint16_t) * index_count;
 	clothUpdateMesh(cloth);
@@ -257,10 +263,14 @@ void clothUpdateMesh(cloth_t* cloth) {
 	for (int i = 0; i < vertex_count; ++i) {
 		const vec3f_t normal = vec3fMagnitudeSqrd(normals[i]) > 0.0f ?
 			vec3fNorm(normals[i]) : vec3fY();
-		cloth->vertices[i * 3] = vec3fAdd(positions[i], vec3fScale(normal, offset));
-		cloth->vertices[i * 3 + 1] = normal;
-		cloth->vertices[(vertex_count + i) * 3] = vec3fSub(positions[i], vec3fScale(normal, offset));
-		cloth->vertices[(vertex_count + i) * 3 + 1] = vec3fScale(normal, -1.0f);
+		const vec3f_t front = vec3fAdd(positions[i], vec3fScale(normal, offset));
+		const vec3f_t back = vec3fSub(positions[i], vec3fScale(normal, offset));
+		gpu_vertex_t* f = &cloth->vertices[i];
+		gpu_vertex_t* b = &cloth->vertices[vertex_count + i];
+		f->position[0] = front.x; f->position[1] = front.y; f->position[2] = front.z;
+		f->normal[0] = normal.x; f->normal[1] = normal.y; f->normal[2] = normal.z;
+		b->position[0] = back.x; b->position[1] = back.y; b->position[2] = back.z;
+		b->normal[0] = -normal.x; b->normal[1] = -normal.y; b->normal[2] = -normal.z;
 	}
 }
 

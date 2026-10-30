@@ -3,6 +3,7 @@
 layout (location = 0) in vec3 inPos;
 layout (location = 1) in vec3 inNormal;
 layout (location = 2) in vec3 inColor;
+layout (location = 3) in vec2 inUv;
 
 layout (row_major, binding = 0) uniform UBO
 {
@@ -13,11 +14,13 @@ layout (row_major, binding = 0) uniform UBO
 	vec4 lightDirectionMetallic;
 	vec4 lightColorAmbient;
 	vec4 material;
+	vec4 textureParams;  // x: uv scale
 } ubo;
 
 layout (location = 0) out vec3 outWorldPos;
 layout (location = 1) out vec3 outNormal;
 layout (location = 2) out vec3 outAlbedo;
+layout (location = 3) out vec2 outUv;
 
 out gl_PerVertex
 {
@@ -30,5 +33,6 @@ void main()
 	outWorldPos = worldPos.xyz;
 	outNormal = normalize(transpose(inverse(mat3(ubo.modelMatrix))) * inNormal);
 	outAlbedo = inColor;
+	outUv = inUv * ubo.textureParams.x;
 	gl_Position = ubo.projectionMatrix * ubo.viewMatrix * worldPos;
 }

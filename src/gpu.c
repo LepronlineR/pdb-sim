@@ -5,6 +5,8 @@
 #include "wm.h"
 
 #include <malloc.h>
+#include <stddef.h>
+#include <string.h>
 
 typedef struct gpu_cmd_buff_t {
 	VkCommandBuffer buffer;
@@ -34,6 +36,14 @@ typedef struct gpu_uniform_buffer_t {
 	VkDescriptorBufferInfo descriptor;
 } gpu_uniform_buffer_t;
 
+typedef struct gpu_texture_t {
+	VkImage image;
+	VkDeviceMemory memory;
+	VkImageView view;
+	VkSampler sampler;
+	VkDescriptorImageInfo descriptor;
+} gpu_texture_t;
+
 typedef struct gpu_mesh_t {
 	VkBuffer idx_buff;
 	VkDeviceMemory idx_mem;
@@ -55,6 +65,11 @@ typedef struct gpu_frame_t {
 	VkImage depth_img;
 	VkDeviceMemory depth_mem;
 	VkImageView depth_view;
+	/* Multisampled color target, resolved into img at the end of the pass.
+	   Unused (null) when samples is 1. */
+	VkImage color_img;
+	VkDeviceMemory color_mem;
+	VkImageView color_view;
 	VkFence fence;
 	VkSemaphore render_finished;
 	gpu_cmd_buff_t* cmd_buff;
@@ -80,6 +95,7 @@ typedef struct gpu_t {
 	uint32_t frame_width;
 	uint32_t frame_height;
 	uint32_t minimum_image_count;
+	VkSampleCountFlagBits samples;  // MSAA samples of the scene and UI pipelines
 
 	VkPipelineInputAssemblyStateCreateInfo mesh_input_asm_info[GPU_MESH_LAYOUT_COUNT];
 	VkPipelineVertexInputStateCreateInfo mesh_vtx_input_info[GPU_MESH_LAYOUT_COUNT];
@@ -98,6 +114,47 @@ typedef struct gpu_t {
 //  --------------------------------------------------------------------------
 //								INIT/DESTROY GPU
 // 
+
+/* An image used only as a render target: device-local memory and a view. */
+static bool gpuCreateAttachment(gpu_t* gpu, VkFormat format, VkSampleCountFlagBits samples,
+	VkImageUsageFlags usage, VkImageAspectFlags aspect, VkExtent2D extent,
+	VkImage* image, VkDeviceMemory* memory, VkImageView* view) {
+	VkImageCreateInfo image_info = {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+		.imageType = VK_IMAGE_TYPE_2D,
+		.format = format,
+		.extent = { extent.width, extent.height, 1 },
+		.mipLevels = 1,
+		.arrayLayers = 1,
+		.samples = samples,
+		.tiling = VK_IMAGE_TILING_OPTIMAL,
+		.usage = usage,
+		.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED
+	};
+	if (vkCreateImage(gpu->logic_dev, &image_info, NULL, image) != VK_SUCCESS) return false;
+
+	VkMemoryRequirements requirements;
+	vkGetImageMemoryRequirements(gpu->logic_dev, *image, &requirements);
+	VkMemoryAllocateInfo alloc_info = {
+		.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+		.allocationSize = requirements.size,
+		.memoryTypeIndex = gpuGetMemoryTypeIndex(gpu, requirements.memoryTypeBits,
+			VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+	};
+	if (vkAllocateMemory(gpu->logic_dev, &alloc_info, NULL, memory) != VK_SUCCESS ||
+		vkBindImageMemory(gpu->logic_dev, *image, *memory, 0) != VK_SUCCESS) {
+		return false;
+	}
+
+	VkImageViewCreateInfo view_info = {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+		.viewType = VK_IMAGE_VIEW_TYPE_2D,
+		.format = format,
+		.subresourceRange = { .aspectMask = aspect, .levelCount = 1, .layerCount = 1 },
+		.image = *image
+	};
+	return vkCreateImageView(gpu->logic_dev, &view_info, NULL, view) == VK_SUCCESS;
+}
 
 gpu_t* gpuCreate(heap_t* heap, wm_window_t* window) {
 	gpu_t* gpu = heapAlloc(heap, sizeof(gpu_t), 8);
@@ -326,54 +383,28 @@ gpu_t* gpuCreate(heap_t* heap, wm_window_t* window) {
 	// ================== Creating a depth buffer image ==================
 	//
 
-	VkImageCreateInfo depth_image_info = {
-		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-		.imageType = VK_IMAGE_TYPE_2D,
-		.format = VK_FORMAT_D32_SFLOAT,
-		.extent = { surface_cap.currentExtent.width, surface_cap.currentExtent.height, 1 },
-		.mipLevels = 1,
-		.arrayLayers = 1,
-		.samples = VK_SAMPLE_COUNT_1_BIT,
-		.tiling = VK_IMAGE_TILING_OPTIMAL,
-		.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
-		.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED
-	};
+	/* 4x MSAA where the device supports it for both color and depth: edges
+	   (cloth hems, silhouettes) are otherwise stair-stepped. */
+	VkPhysicalDeviceProperties device_properties;
+	vkGetPhysicalDeviceProperties(gpu->phys_dev, &device_properties);
+	const VkSampleCountFlags sample_counts = device_properties.limits.framebufferColorSampleCounts &
+		device_properties.limits.framebufferDepthSampleCounts;
+	gpu->samples = (sample_counts & VK_SAMPLE_COUNT_4_BIT) ? VK_SAMPLE_COUNT_4_BIT :
+		(sample_counts & VK_SAMPLE_COUNT_2_BIT) ? VK_SAMPLE_COUNT_2_BIT : VK_SAMPLE_COUNT_1_BIT;
+	const bool multisampled = gpu->samples != VK_SAMPLE_COUNT_1_BIT;
 
 	for (uint32_t x = 0; x < gpu->frame_count; ++x) {
 		gpu_frame_t* frame = &gpu->frames[x];
-		vk_result = vkCreateImage(gpu->logic_dev, &depth_image_info, NULL, &frame->depth_img);
-		if (vk_result != VK_SUCCESS) {
-			return gpuError(gpu, "vkCreateImage", "Unable to create a depth image.");
+		if (!gpuCreateAttachment(gpu, VK_FORMAT_D32_SFLOAT, gpu->samples,
+			VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_IMAGE_ASPECT_DEPTH_BIT,
+			surface_cap.currentExtent, &frame->depth_img, &frame->depth_mem, &frame->depth_view)) {
+			return gpuError(gpu, "depth attachment", "Unable to create a depth image.");
 		}
-
-		VkMemoryRequirements depth_mem_reqs;
-		vkGetImageMemoryRequirements(gpu->logic_dev, frame->depth_img, &depth_mem_reqs);
-		VkMemoryAllocateInfo depth_alloc_info = {
-			.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-			.allocationSize = depth_mem_reqs.size,
-			.memoryTypeIndex = gpuGetMemoryTypeIndex(gpu, depth_mem_reqs.memoryTypeBits,
-				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
-		};
-		vk_result = vkAllocateMemory(gpu->logic_dev, &depth_alloc_info, NULL, &frame->depth_mem);
-		if (vk_result != VK_SUCCESS ||
-			vkBindImageMemory(gpu->logic_dev, frame->depth_img, frame->depth_mem, 0) != VK_SUCCESS) {
-			return gpuError(gpu, "depth memory", "Unable to allocate or bind depth memory.");
-		}
-
-		VkImageViewCreateInfo depth_view_info = {
-			.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
-			.viewType = VK_IMAGE_VIEW_TYPE_2D,
-			.format = VK_FORMAT_D32_SFLOAT,
-			.subresourceRange = {
-				.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
-				.levelCount = 1,
-				.layerCount = 1
-			},
-			.image = frame->depth_img
-		};
-		vk_result = vkCreateImageView(gpu->logic_dev, &depth_view_info, NULL, &frame->depth_view);
-		if (vk_result != VK_SUCCESS) {
-			return gpuError(gpu, "vkCreateImageView", "Unable to create a depth image view.");
+		if (multisampled && !gpuCreateAttachment(gpu, VK_FORMAT_B8G8R8A8_SRGB, gpu->samples,
+			VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSIENT_ATTACHMENT_BIT,
+			VK_IMAGE_ASPECT_COLOR_BIT, surface_cap.currentExtent,
+			&frame->color_img, &frame->color_mem, &frame->color_view)) {
+			return gpuError(gpu, "color attachment", "Unable to create a multisampled color image.");
 		}
 	}
 
@@ -381,27 +412,45 @@ gpu_t* gpuCreate(heap_t* heap, wm_window_t* window) {
 	// ================== Create the render pass (draws to screen) ==================
 	//
 
-	VkAttachmentDescription attachments[2] = {
+	/* Attachment 0 is drawn to: the swapchain image, or with MSAA the
+	   multisampled image, which attachment 2 (the swapchain image) resolves. */
+	VkAttachmentDescription attachments[3] = {
+		{
+			.format = VK_FORMAT_B8G8R8A8_SRGB,
+			.samples = gpu->samples,
+			.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+			.storeOp = multisampled ? VK_ATTACHMENT_STORE_OP_DONT_CARE : VK_ATTACHMENT_STORE_OP_STORE,
+			.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+			.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+			.finalLayout = multisampled ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL :
+				VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
+		},
+		{
+			.format = VK_FORMAT_D32_SFLOAT,
+			.samples = gpu->samples,
+			.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+			.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+			.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+			.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+			.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+		},
 		{
 			.format = VK_FORMAT_B8G8R8A8_SRGB,
 			.samples = VK_SAMPLE_COUNT_1_BIT,
-			.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+			.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
 			.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
 			.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
 			.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
 			.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
 			.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR
-		},
-		{
-			.format = VK_FORMAT_D32_SFLOAT,
-			.samples = VK_SAMPLE_COUNT_1_BIT,
-			.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-			.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-			.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-			.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-			.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
-			.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
 		}
+	};
+
+	VkAttachmentReference resolve_reference = {
+		.attachment = 2,
+		.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
 	};
 
 	VkAttachmentReference color_reference = {
@@ -418,6 +467,7 @@ gpu_t* gpuCreate(heap_t* heap, wm_window_t* window) {
 		.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
 		.colorAttachmentCount = 1,
 		.pColorAttachments = &color_reference,
+		.pResolveAttachments = multisampled ? &resolve_reference : NULL,
 		.pDepthStencilAttachment = &depth_reference,
 	};
 
@@ -449,7 +499,7 @@ gpu_t* gpuCreate(heap_t* heap, wm_window_t* window) {
 
 	VkRenderPassCreateInfo render_pass_info = {
 		.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-		.attachmentCount = _countof(attachments),
+		.attachmentCount = multisampled ? 3 : 2,
 		.pAttachments = attachments,
 		.subpassCount = 1,
 		.pSubpasses = &subpass,
@@ -466,15 +516,16 @@ gpu_t* gpuCreate(heap_t* heap, wm_window_t* window) {
 	//
 
 	for (uint32_t x = 0; x < gpu->frame_count; x++) {
-		VkImageView view_buffer_attachments[2] = {
-			gpu->frames[x].view,
-			gpu->frames[x].depth_view
+		VkImageView view_buffer_attachments[3] = {
+			multisampled ? gpu->frames[x].color_view : gpu->frames[x].view,
+			gpu->frames[x].depth_view,
+			gpu->frames[x].view
 		};
 
 		VkFramebufferCreateInfo frame_buffer_info = {
 			.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
 			.renderPass = gpu->render_pass,
-			.attachmentCount = _countof(view_buffer_attachments),
+			.attachmentCount = multisampled ? 3 : 2,
 			.pAttachments = view_buffer_attachments,
 			.width = surface_cap.currentExtent.width,
 			.height = surface_cap.currentExtent.height,
@@ -508,9 +559,13 @@ gpu_t* gpuCreate(heap_t* heap, wm_window_t* window) {
 	// ================== Create descriptor pools ==================
 	//
 	
-	VkDescriptorPoolSize descriptor_pool_sizes[1] = {
+	VkDescriptorPoolSize descriptor_pool_sizes[2] = {
 		{
 			.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+			.descriptorCount = 512
+		},
+		{
+			.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
 			.descriptorCount = 512
 		}
 	};
@@ -602,6 +657,12 @@ void gpuDestroy(gpu_t* gpu) {
 					vkDestroyImage(gpu->logic_dev, frame->depth_img, NULL);
 				if (frame->depth_mem)
 					vkFreeMemory(gpu->logic_dev, frame->depth_mem, NULL);
+				if (frame->color_view)
+					vkDestroyImageView(gpu->logic_dev, frame->color_view, NULL);
+				if (frame->color_img)
+					vkDestroyImage(gpu->logic_dev, frame->color_img, NULL);
+				if (frame->color_mem)
+					vkFreeMemory(gpu->logic_dev, frame->color_mem, NULL);
 				if (frame->view)
 					vkDestroyImageView(gpu->logic_dev, frame->view, NULL);
 				if (frame->cmd_buff) {
@@ -758,10 +819,11 @@ gpu_descriptor_t* gpuCreateDescriptorSets(gpu_t* gpu, const gpu_descriptor_info_
 		return gpuError(gpu, "vkAllocateDescriptorSets", "Unalbe to allocate for a descriptor set.");
 	}
 
+	const int write_count = descriptor_info->uniform_buffer_count + descriptor_info->texture_count;
 	VkWriteDescriptorSet* write_descriptor_set = NULL;
-	if (descriptor_info->uniform_buffer_count > 0) {
+	if (write_count > 0) {
 		write_descriptor_set = heapAlloc(gpu->heap,
-			sizeof(VkWriteDescriptorSet) * descriptor_info->uniform_buffer_count,
+			sizeof(VkWriteDescriptorSet) * write_count,
 			_Alignof(VkWriteDescriptorSet));
 	}
 	for (int x = 0; x < descriptor_info->uniform_buffer_count; x++) {
@@ -774,7 +836,18 @@ gpu_descriptor_t* gpuCreateDescriptorSets(gpu_t* gpu, const gpu_descriptor_info_
 			.dstBinding = x
 		};
 	}
-	vkUpdateDescriptorSets(gpu->logic_dev, descriptor_info->uniform_buffer_count, write_descriptor_set, 0, NULL);
+	for (int x = 0; x < descriptor_info->texture_count; x++) {
+		const int binding = descriptor_info->uniform_buffer_count + x;
+		write_descriptor_set[binding] = (VkWriteDescriptorSet){
+			.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+			.dstSet = descriptor->set,
+			.descriptorCount = 1,
+			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			.pImageInfo = &descriptor_info->textures[x]->descriptor,
+			.dstBinding = binding
+		};
+	}
+	vkUpdateDescriptorSets(gpu->logic_dev, write_count, write_descriptor_set, 0, NULL);
 	if (write_descriptor_set) {
 		heapFree(gpu->heap, write_descriptor_set);
 	}
@@ -805,7 +878,7 @@ gpu_pipeline_t* gpuCreatePipeline(gpu_t* gpu, const gpu_pipeline_info_t* pipelin
 	VkPipelineRasterizationStateCreateInfo raster_state_info = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
 		.polygonMode = VK_POLYGON_MODE_FILL,
-		.cullMode = VK_CULL_MODE_BACK_BIT,
+		.cullMode = pipeline_info->background ? VK_CULL_MODE_NONE : VK_CULL_MODE_BACK_BIT,
 		.frontFace = VK_FRONT_FACE_CLOCKWISE,
 		.lineWidth = 1.0f
 	};
@@ -830,8 +903,10 @@ gpu_pipeline_t* gpuCreatePipeline(gpu_t* gpu, const gpu_pipeline_info_t* pipelin
 	VkPipelineDepthStencilStateCreateInfo depth_stencil_state_info = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
 		.depthTestEnable = VK_TRUE,
-		.depthWriteEnable = VK_TRUE,
-		.depthCompareOp = VK_COMPARE_OP_LESS,
+		/* A background sits at the far plane (depth 1.0): it must pass against
+		   the cleared depth and must not hide anything drawn after it. */
+		.depthWriteEnable = pipeline_info->background ? VK_FALSE : VK_TRUE,
+		.depthCompareOp = pipeline_info->background ? VK_COMPARE_OP_LESS_OR_EQUAL : VK_COMPARE_OP_LESS,
 		.depthBoundsTestEnable = VK_FALSE,
 		.back.failOp = VK_STENCIL_OP_KEEP,
 		.back.passOp = VK_STENCIL_OP_KEEP,
@@ -841,7 +916,7 @@ gpu_pipeline_t* gpuCreatePipeline(gpu_t* gpu, const gpu_pipeline_info_t* pipelin
 
 	VkPipelineMultisampleStateCreateInfo multisample_state_info = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-		.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT
+		.rasterizationSamples = gpu->samples
 	};
 
 	VkPipelineShaderStageCreateInfo shader_stage_info[2] = {
@@ -1287,6 +1362,50 @@ void gpuCreateMeshLayouts(gpu_t* gpu) {
 	gpu->mesh_idx_type[GPU_MESH_LAYOUT_TRI_P444_N444_C444_I2] = VK_INDEX_TYPE_UINT16;
 	gpu->mesh_idx_size[GPU_MESH_LAYOUT_TRI_P444_N444_C444_I2] = 2;
 	gpu->mesh_vtx_size[GPU_MESH_LAYOUT_TRI_P444_N444_C444_I2] = 36;
+
+	//
+	// ================== GPU_MESH_LAYOUT_TRI_P444_N444_C444_U44_I2 ==================
+	//
+
+	gpu->mesh_input_asm_info[GPU_MESH_LAYOUT_TRI_P444_N444_C444_U44_I2] = (VkPipelineInputAssemblyStateCreateInfo){
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+		.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST
+	};
+
+	VkVertexInputBindingDescription* vertex_binding_pncu = heapAlloc(gpu->heap, sizeof(VkVertexInputBindingDescription), 0);
+	vertex_binding_pncu->binding = 0;
+	vertex_binding_pncu->stride = sizeof(gpu_vertex_t);
+	vertex_binding_pncu->inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+	VkVertexInputAttributeDescription* vertex_attributes_pncu = heapAlloc(gpu->heap, 4 * sizeof(VkVertexInputAttributeDescription), 8);
+	vertex_attributes_pncu[0] = (VkVertexInputAttributeDescription){
+		.binding = 0, .location = 0, .format = VK_FORMAT_R32G32B32_SFLOAT,
+		.offset = offsetof(gpu_vertex_t, position)
+	};
+	vertex_attributes_pncu[1] = (VkVertexInputAttributeDescription){
+		.binding = 0, .location = 1, .format = VK_FORMAT_R32G32B32_SFLOAT,
+		.offset = offsetof(gpu_vertex_t, normal)
+	};
+	vertex_attributes_pncu[2] = (VkVertexInputAttributeDescription){
+		.binding = 0, .location = 2, .format = VK_FORMAT_R32G32B32_SFLOAT,
+		.offset = offsetof(gpu_vertex_t, color)
+	};
+	vertex_attributes_pncu[3] = (VkVertexInputAttributeDescription){
+		.binding = 0, .location = 3, .format = VK_FORMAT_R32G32_SFLOAT,
+		.offset = offsetof(gpu_vertex_t, uv)
+	};
+
+	gpu->mesh_vtx_input_info[GPU_MESH_LAYOUT_TRI_P444_N444_C444_U44_I2] = (VkPipelineVertexInputStateCreateInfo){
+		.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+		.vertexBindingDescriptionCount = 1,
+		.pVertexBindingDescriptions = vertex_binding_pncu,
+		.vertexAttributeDescriptionCount = 4,
+		.pVertexAttributeDescriptions = vertex_attributes_pncu,
+	};
+
+	gpu->mesh_idx_type[GPU_MESH_LAYOUT_TRI_P444_N444_C444_U44_I2] = VK_INDEX_TYPE_UINT16;
+	gpu->mesh_idx_size[GPU_MESH_LAYOUT_TRI_P444_N444_C444_U44_I2] = 2;
+	gpu->mesh_vtx_size[GPU_MESH_LAYOUT_TRI_P444_N444_C444_U44_I2] = sizeof(gpu_vertex_t);
 }
 
 void gpuDestroyMeshLayouts(gpu_t* gpu) {
@@ -1301,6 +1420,251 @@ void gpuDestroyMeshLayouts(gpu_t* gpu) {
 //  --------------------------------------------------------------------------
 //								    SHADERS
 // 
+
+//  --------------------------------------------------------------------------
+//								TEXTURES
+//
+
+uint64_t gpuTextureInfoNextId(void) {
+	static uint64_t next_id;
+	return ++next_id;
+}
+
+static uint32_t gpuMipLevelCount(int width, int height) {
+	uint32_t levels = 1;
+	int size = width > height ? width : height;
+	while (size > 1) {
+		size /= 2;
+		++levels;
+	}
+	return levels;
+}
+
+static void gpuTextureBarrier(VkCommandBuffer command, VkImage image, uint32_t base_mip,
+	uint32_t mip_count, VkImageLayout from, VkImageLayout to, VkAccessFlags source_access,
+	VkAccessFlags destination_access, VkPipelineStageFlags source_stage,
+	VkPipelineStageFlags destination_stage) {
+	VkImageMemoryBarrier barrier = {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+		.srcAccessMask = source_access,
+		.dstAccessMask = destination_access,
+		.oldLayout = from,
+		.newLayout = to,
+		.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+		.image = image,
+		.subresourceRange = {
+			.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+			.baseMipLevel = base_mip,
+			.levelCount = mip_count,
+			.baseArrayLayer = 0,
+			.layerCount = 1
+		}
+	};
+	vkCmdPipelineBarrier(command, source_stage, destination_stage, 0, 0, NULL, 0, NULL, 1, &barrier);
+}
+
+/* Uploads RGBA8 pixels through a host-visible staging buffer into a
+   device-local image, then fills the mip chain by repeated half-size blits.
+   Runs on the render thread at load time and waits for the queue. */
+gpu_texture_t* gpuCreateTexture(gpu_t* gpu, const gpu_texture_info_t* texture_info) {
+	if (!texture_info || !texture_info->pixels || texture_info->width <= 0 || texture_info->height <= 0) {
+		return gpuError(gpu, "gpuCreateTexture", "Texture has no pixels.");
+	}
+	gpu_texture_t* texture = heapAlloc(gpu->heap, sizeof(gpu_texture_t), 8);
+	memset(texture, 0, sizeof(*texture));
+	const uint32_t width = (uint32_t)texture_info->width;
+	const uint32_t height = (uint32_t)texture_info->height;
+	const VkDeviceSize size = (VkDeviceSize)width * height * 4;
+	const VkFormat format = texture_info->srgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM;
+
+	/* Mips need linear blits from this format; without them, use one level. */
+	VkFormatProperties format_properties;
+	vkGetPhysicalDeviceFormatProperties(gpu->phys_dev, format, &format_properties);
+	const bool can_blit = (format_properties.optimalTilingFeatures &
+		VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0;
+	const uint32_t mip_levels = can_blit ? gpuMipLevelCount(texture_info->width, texture_info->height) : 1;
+
+	// staging buffer
+	VkBuffer staging = VK_NULL_HANDLE;
+	VkDeviceMemory staging_memory = VK_NULL_HANDLE;
+	VkBufferCreateInfo staging_info = {
+		.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+		.size = size,
+		.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+	};
+	if (vkCreateBuffer(gpu->logic_dev, &staging_info, NULL, &staging) != VK_SUCCESS) {
+		heapFree(gpu->heap, texture);
+		return gpuError(gpu, "vkCreateBuffer", "Unable to create a texture staging buffer.");
+	}
+	VkMemoryRequirements staging_requirements;
+	vkGetBufferMemoryRequirements(gpu->logic_dev, staging, &staging_requirements);
+	VkMemoryAllocateInfo staging_alloc = {
+		.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+		.allocationSize = staging_requirements.size,
+		.memoryTypeIndex = gpuGetMemoryTypeIndex(gpu, staging_requirements.memoryTypeBits,
+			VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT)
+	};
+	void* mapped = NULL;
+	if (vkAllocateMemory(gpu->logic_dev, &staging_alloc, NULL, &staging_memory) != VK_SUCCESS ||
+		vkBindBufferMemory(gpu->logic_dev, staging, staging_memory, 0) != VK_SUCCESS ||
+		vkMapMemory(gpu->logic_dev, staging_memory, 0, size, 0, &mapped) != VK_SUCCESS) {
+		vkDestroyBuffer(gpu->logic_dev, staging, NULL);
+		if (staging_memory) vkFreeMemory(gpu->logic_dev, staging_memory, NULL);
+		heapFree(gpu->heap, texture);
+		return gpuError(gpu, "vkAllocateMemory", "Unable to fill a texture staging buffer.");
+	}
+	memcpy(mapped, texture_info->pixels, (size_t)size);
+	vkUnmapMemory(gpu->logic_dev, staging_memory);
+
+	// image
+	VkImageCreateInfo image_info = {
+		.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+		.imageType = VK_IMAGE_TYPE_2D,
+		.format = format,
+		.extent = { width, height, 1 },
+		.mipLevels = mip_levels,
+		.arrayLayers = 1,
+		.samples = VK_SAMPLE_COUNT_1_BIT,
+		.tiling = VK_IMAGE_TILING_OPTIMAL,
+		.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+			VK_IMAGE_USAGE_SAMPLED_BIT,
+		.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+		.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED
+	};
+	VkResult vk_result = vkCreateImage(gpu->logic_dev, &image_info, NULL, &texture->image);
+	VkMemoryRequirements image_requirements;
+	if (vk_result == VK_SUCCESS) {
+		vkGetImageMemoryRequirements(gpu->logic_dev, texture->image, &image_requirements);
+		VkMemoryAllocateInfo image_alloc = {
+			.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+			.allocationSize = image_requirements.size,
+			.memoryTypeIndex = gpuGetMemoryTypeIndex(gpu, image_requirements.memoryTypeBits,
+				VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
+		};
+		vk_result = vkAllocateMemory(gpu->logic_dev, &image_alloc, NULL, &texture->memory);
+	}
+	if (vk_result == VK_SUCCESS) {
+		vk_result = vkBindImageMemory(gpu->logic_dev, texture->image, texture->memory, 0);
+	}
+
+	// copy and mips, recorded into a one-time command buffer
+	VkCommandBuffer command = VK_NULL_HANDLE;
+	if (vk_result == VK_SUCCESS) {
+		VkCommandBufferAllocateInfo command_info = {
+			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+			.commandPool = gpu->cmd_pool,
+			.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+			.commandBufferCount = 1
+		};
+		vk_result = vkAllocateCommandBuffers(gpu->logic_dev, &command_info, &command);
+	}
+	if (vk_result == VK_SUCCESS) {
+		VkCommandBufferBeginInfo begin_info = {
+			.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+			.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT
+		};
+		vkBeginCommandBuffer(command, &begin_info);
+		gpuTextureBarrier(command, texture->image, 0, mip_levels, VK_IMAGE_LAYOUT_UNDEFINED,
+			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
+			VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+		VkBufferImageCopy region = {
+			.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 },
+			.imageExtent = { width, height, 1 }
+		};
+		vkCmdCopyBufferToImage(command, staging, texture->image,
+			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+		int32_t mip_width = (int32_t)width;
+		int32_t mip_height = (int32_t)height;
+		for (uint32_t level = 1; level < mip_levels; ++level) {
+			gpuTextureBarrier(command, texture->image, level - 1, 1,
+				VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+				VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+				VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+			const int32_t next_width = mip_width > 1 ? mip_width / 2 : 1;
+			const int32_t next_height = mip_height > 1 ? mip_height / 2 : 1;
+			VkImageBlit blit = {
+				.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, level - 1, 0, 1 },
+				.srcOffsets = { { 0, 0, 0 }, { mip_width, mip_height, 1 } },
+				.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, level, 0, 1 },
+				.dstOffsets = { { 0, 0, 0 }, { next_width, next_height, 1 } }
+			};
+			vkCmdBlitImage(command, texture->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+				texture->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+			gpuTextureBarrier(command, texture->image, level - 1, 1,
+				VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+				VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_READ_BIT,
+				VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+			mip_width = next_width;
+			mip_height = next_height;
+		}
+		gpuTextureBarrier(command, texture->image, mip_levels - 1, 1,
+			VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+			VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+			VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+		vkEndCommandBuffer(command);
+
+		VkSubmitInfo submit_info = {
+			.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+			.commandBufferCount = 1,
+			.pCommandBuffers = &command
+		};
+		vk_result = vkQueueSubmit(gpu->queue, 1, &submit_info, VK_NULL_HANDLE);
+		if (vk_result == VK_SUCCESS) vk_result = vkQueueWaitIdle(gpu->queue);
+	}
+	if (command) vkFreeCommandBuffers(gpu->logic_dev, gpu->cmd_pool, 1, &command);
+	vkDestroyBuffer(gpu->logic_dev, staging, NULL);
+	vkFreeMemory(gpu->logic_dev, staging_memory, NULL);
+
+	// view and sampler
+	if (vk_result == VK_SUCCESS) {
+		VkImageViewCreateInfo view_info = {
+			.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+			.image = texture->image,
+			.viewType = VK_IMAGE_VIEW_TYPE_2D,
+			.format = format,
+			.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, mip_levels, 0, 1 }
+		};
+		vk_result = vkCreateImageView(gpu->logic_dev, &view_info, NULL, &texture->view);
+	}
+	if (vk_result == VK_SUCCESS) {
+		const VkSamplerAddressMode wrap_v = texture_info->clamp_v ?
+			VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE : VK_SAMPLER_ADDRESS_MODE_REPEAT;
+		VkSamplerCreateInfo sampler_info = {
+			.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+			.magFilter = VK_FILTER_LINEAR,
+			.minFilter = VK_FILTER_LINEAR,
+			.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR,
+			.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+			.addressModeV = wrap_v,
+			.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT,
+			.minLod = 0.0f,
+			.maxLod = (float)mip_levels,
+			.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK
+		};
+		vk_result = vkCreateSampler(gpu->logic_dev, &sampler_info, NULL, &texture->sampler);
+	}
+	if (vk_result != VK_SUCCESS) {
+		gpuDestroyTexture(gpu, texture);
+		return gpuError(gpu, "gpuCreateTexture", "Unable to create a texture.");
+	}
+	texture->descriptor = (VkDescriptorImageInfo){
+		.sampler = texture->sampler,
+		.imageView = texture->view,
+		.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+	};
+	return texture;
+}
+
+void gpuDestroyTexture(gpu_t* gpu, gpu_texture_t* texture) {
+	if (!texture) return;
+	if (texture->sampler) vkDestroySampler(gpu->logic_dev, texture->sampler, NULL);
+	if (texture->view) vkDestroyImageView(gpu->logic_dev, texture->view, NULL);
+	if (texture->image) vkDestroyImage(gpu->logic_dev, texture->image, NULL);
+	if (texture->memory) vkFreeMemory(gpu->logic_dev, texture->memory, NULL);
+	heapFree(gpu->heap, texture);
+}
 
 gpu_shader_t* gpuCreateShader(gpu_t* gpu, gpu_shader_info_t* shader_info) {
 	gpu_shader_t* shader = heapAlloc(gpu->heap, sizeof(gpu_shader_t), 8);
@@ -1328,10 +1692,11 @@ gpu_shader_t* gpuCreateShader(gpu_t* gpu, gpu_shader_info_t* shader_info) {
 		return gpuError(gpu, "vkCreateShaderModule", "Unable to create the fragment shader module.");
 	}
 
+	const int binding_count = shader_info->uniform_buffer_count + shader_info->texture_count;
 	VkDescriptorSetLayoutBinding* descriptor_set_layout_bindings = NULL;
-	if (shader_info->uniform_buffer_count > 0) {
+	if (binding_count > 0) {
 		descriptor_set_layout_bindings = heapAlloc(gpu->heap,
-			sizeof(VkDescriptorSetLayoutBinding) * shader_info->uniform_buffer_count,
+			sizeof(VkDescriptorSetLayoutBinding) * binding_count,
 			_Alignof(VkDescriptorSetLayoutBinding));
 	}
 	for (int x = 0; x < shader_info->uniform_buffer_count; x++) {
@@ -1343,9 +1708,19 @@ gpu_shader_t* gpuCreateShader(gpu_t* gpu, gpu_shader_info_t* shader_info) {
 		};
 	}
 
+	for (int x = 0; x < shader_info->texture_count; x++) {
+		descriptor_set_layout_bindings[shader_info->uniform_buffer_count + x] =
+			(VkDescriptorSetLayoutBinding){
+			.binding = shader_info->uniform_buffer_count + x,
+			.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+			.descriptorCount = 1,
+			.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT
+		};
+	}
+
 	VkDescriptorSetLayoutCreateInfo descriptor_set_layout_info = {
 		.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-		.bindingCount = shader_info->uniform_buffer_count,
+		.bindingCount = binding_count,
 		.pBindings = descriptor_set_layout_bindings
 	};
 	vk_result = vkCreateDescriptorSetLayout(gpu->logic_dev, &descriptor_set_layout_info, NULL, &shader->descriptor_set_layout);
@@ -1390,6 +1765,7 @@ VkDevice gpuGetDevice(gpu_t* gpu) { return gpu->logic_dev; }
 VkQueue gpuGetQueue(gpu_t* gpu) { return gpu->queue; }
 uint32_t gpuGetQueueFamilyIndex(gpu_t* gpu) { return gpu->queue_family_index; }
 VkRenderPass gpuGetRenderPass(gpu_t* gpu) { return gpu->render_pass; }
+VkSampleCountFlagBits gpuGetSampleCount(gpu_t* gpu) { return gpu->samples; }
 uint32_t gpuGetSwapchainImageCount(gpu_t* gpu) { return gpu->frame_count; }
 uint32_t gpuGetMinimumImageCount(gpu_t* gpu) { return gpu->minimum_image_count; }
 VkCommandBuffer gpuGetCommandBuffer(gpu_cmd_buff_t* command_buffer) {

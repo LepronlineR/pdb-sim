@@ -16,13 +16,16 @@ typedef struct gpu_uniform_buffer_info_t gpu_uniform_buffer_info_t;
 typedef struct gpu_mesh_info_t gpu_mesh_info_t;
 typedef struct gpu_shader_info_t gpu_shader_info_t;
 typedef struct gpu_shader_t gpu_shader_t;
+typedef struct gpu_texture_info_t gpu_texture_info_t;
+typedef struct gpu_texture_t gpu_texture_t;
 
 renderer_t* rendererCreate(heap_t* heap, wm_window_t* window);
 
 void rendererDestroy(renderer_t* render);
 
-// Add a model to the renderer queue
-void rendererModelAdd(renderer_t* render, ecs_entity_t* entity, gpu_mesh_info_t* mesh, gpu_shader_info_t* shader, gpu_uniform_buffer_info_t* uniform);
+// Add a model to the renderer queue. The texture (NULL: plain white) is bound
+// when the shader samples one; like the mesh, it must outlive the queued frame.
+void rendererModelAdd(renderer_t* render, ecs_entity_t* entity, gpu_mesh_info_t* mesh, gpu_shader_info_t* shader, gpu_texture_info_t* texture, gpu_uniform_buffer_info_t* uniform);
 
 // Blocks until the render thread has finished every queued frame, so scene-owned
 // mesh data can be freed safely.
@@ -37,7 +40,9 @@ draw_shader_t* rendererShaderModelCommand(renderer_t* render,
 draw_mesh_t* rendererMeshModelCommand(renderer_t* render,
 	command_model_t* command);
 draw_instance_t* rendererInstanceModelCommand(renderer_t* render,
-	command_model_t* command, gpu_shader_t* shader);
+	command_model_t* command, draw_shader_t* shader);
+gpu_texture_t* rendererTextureModelCommand(renderer_t* render,
+	command_model_t* command);
 void rendererDestroyStaleData(renderer_t* render);
 
 #endif

@@ -20,14 +20,24 @@ typedef struct gpu_pipeline_t gpu_pipeline_t;			// Holds pipeline information
 typedef struct gpu_descriptor_t gpu_descriptor_t;		// Holds descriptor sets
 typedef struct gpu_shader_t gpu_shader_t;
 typedef struct gpu_uniform_buffer_t gpu_uniform_buffer_t;
+typedef struct gpu_texture_t gpu_texture_t;				// Holds a sampled image
 
 // MESH LAYOUTS
 typedef enum gpu_mesh_layout_t {
 	GPU_MESH_LAYOUT_TRI_P444_I2,
 	GPU_MESH_LAYOUT_TRI_P444_C444_I2,
 	GPU_MESH_LAYOUT_TRI_P444_N444_C444_I2,
+	GPU_MESH_LAYOUT_TRI_P444_N444_C444_U44_I2,  // gpu_vertex_t: position, normal, color, uv
 	GPU_MESH_LAYOUT_COUNT	// use this to track the total amount of mesh layouts (put it at the end)
 } gpu_mesh_layout_t;
+
+// Vertex of GPU_MESH_LAYOUT_TRI_P444_N444_C444_U44_I2.
+typedef struct gpu_vertex_t {
+	float position[3];
+	float normal[3];
+	float color[3];
+	float uv[2];
+} gpu_vertex_t;
 
 // SHADER INFO
 typedef struct gpu_shader_info_t {
@@ -35,13 +45,20 @@ typedef struct gpu_shader_info_t {
 	size_t vtx_shader_size;
 	void* frag_shader_data;
 	size_t frag_shader_size;
+	// Descriptor bindings: the uniform buffers first (bindings 0..), then the
+	// textures as combined image samplers.
 	int uniform_buffer_count;
+	int texture_count;
+	// Drawn behind everything (a skybox): depth test LEQUAL, no depth writes,
+	// no culling.
+	bool background;
 } gpu_shader_info_t;
 
 // PIPELINE
 typedef struct gpu_pipeline_info_t {
 	gpu_shader_t* shader;
 	gpu_mesh_layout_t mesh_layout;
+	bool background;  // see gpu_shader_info_t.background
 } gpu_pipeline_info_t;
 
 // DESCRIPTOR
@@ -49,7 +66,21 @@ typedef struct gpu_descriptor_info_t {
 	gpu_shader_t* shader;
 	gpu_uniform_buffer_t** uniform_buffers;
 	int uniform_buffer_count;
+	gpu_texture_t** textures;
+	int texture_count;
 } gpu_descriptor_info_t;
+
+// TEXTURE
+typedef struct gpu_texture_info_t {
+	// Identifies the texture to the renderer beyond its address (see
+	// gpu_mesh_info_t.id).
+	uint64_t id;
+	int width;
+	int height;
+	void* pixels;  // RGBA8, width * height * 4 bytes
+	bool srgb;     // color data stored in sRGB (photos, albedo maps)
+	bool clamp_v;  // clamp instead of repeat vertically (sky panoramas)
+} gpu_texture_info_t;
 
 // UNIFORM BUFFER
 typedef struct gpu_uniform_buffer_info_t {
@@ -106,6 +137,13 @@ void gpuUpdateMeshVertices(gpu_t* gpu, gpu_mesh_t* mesh, const void* data, size_
 void gpuDestroyMesh(gpu_t* gpu, gpu_mesh_t* mesh);
 void gpuCommandBindMesh(gpu_t* gpu, gpu_cmd_buff_t* cmd_buff, gpu_mesh_t* mesh);
 
+// Returns a new non-zero id for gpu_texture_info_t.id. Call from one thread only.
+uint64_t gpuTextureInfoNextId(void);
+// Uploads the pixels into a mipmapped, sampled image. Waits for the queue, so
+// create textures at load time.
+gpu_texture_t* gpuCreateTexture(gpu_t* gpu, const gpu_texture_info_t* texture_info);
+void gpuDestroyTexture(gpu_t* gpu, gpu_texture_t* texture);
+
 gpu_shader_t* gpuCreateShader(gpu_t* gpu, gpu_shader_info_t* shader_info);
 void gpuDestroyShader(gpu_t* gpu, gpu_shader_t* shader);
 
@@ -120,6 +158,8 @@ VkDevice gpuGetDevice(gpu_t* gpu);
 VkQueue gpuGetQueue(gpu_t* gpu);
 uint32_t gpuGetQueueFamilyIndex(gpu_t* gpu);
 VkRenderPass gpuGetRenderPass(gpu_t* gpu);
+// MSAA samples of the render pass (pipelines drawing into it must match).
+VkSampleCountFlagBits gpuGetSampleCount(gpu_t* gpu);
 uint32_t gpuGetSwapchainImageCount(gpu_t* gpu);
 uint32_t gpuGetMinimumImageCount(gpu_t* gpu);
 VkCommandBuffer gpuGetCommandBuffer(gpu_cmd_buff_t* command_buffer);

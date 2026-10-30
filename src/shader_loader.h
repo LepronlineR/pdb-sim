@@ -9,6 +9,9 @@ typedef struct shader_loader_t shader_loader_t;
 shader_loader_t* shaderLoaderCreate(heap_t* heap, fs_t* fs);
 void shaderLoaderDestroy(shader_loader_t* loader);
 gpu_shader_info_t* shaderLoaderGetFlat(shader_loader_t* loader);
+// Lit, textured surfaces: meshes with the P N C U layout and one texture.
 gpu_shader_info_t* shaderLoaderGetPbr(shader_loader_t* loader);
+// The sky panorama, drawn behind everything (see gpu_shader_info_t.background).
+gpu_shader_info_t* shaderLoaderGetSkybox(shader_loader_t* loader);
 
 #endif

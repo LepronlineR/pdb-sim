@@ -62,6 +62,9 @@ typedef struct ui_object_properties_t {
 	float drag;
 	int pin;  // cloth_pin_t
 	int pin_count;  // read-only: preset plus hand-placed pins
+	// material
+	int texture;     // texture_id_t, below TEXTURE_SKY
+	float uv_scale;  // texture repeats across the object's uvs
 } ui_object_properties_t;
 
 typedef struct ui_object_t {
@@ -132,6 +135,15 @@ typedef struct ui_sim_settings_t {
 	float rolling_resistance;
 } ui_sim_settings_t;
 
+// Sky and ground settings edited in the UI and applied by the scene every frame.
+// They are not part of play: Stop leaves them as they are.
+typedef struct ui_environment_settings_t {
+	bool sky;            // draw the sky panorama (otherwise the clear color)
+	float sky_exposure;
+	float sky_rotation;  // degrees about the vertical axis
+	int ground_texture;  // texture_id_t
+} ui_environment_settings_t;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -146,6 +158,9 @@ void uiPushCommand(ui_t* ui, const ui_command_t* command);
 bool uiPopCommand(ui_t* ui, ui_command_t* command);
 void uiSetSceneView(ui_t* ui, const ui_scene_view_t* view);
 ui_sim_settings_t uiGetSimSettings(ui_t* ui);
+ui_environment_settings_t uiGetEnvironmentSettings(ui_t* ui);
+// Replaces the environment settings, as if edited in the panel (scripted tests).
+void uiSetEnvironmentSettings(ui_t* ui, const ui_environment_settings_t* settings);
 bool uiWantsMouse(ui_t* ui);
 
 bool uiWindowMessage(void* user_data, void* native_window,

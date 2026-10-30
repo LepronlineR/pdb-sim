@@ -10,6 +10,7 @@ typedef struct transform_t transform_t;
 typedef struct mat4f_t mat4f_t;
 typedef struct gpu_mesh_info_t gpu_mesh_info_t;
 typedef struct gpu_shader_info_t gpu_shader_info_t;
+typedef struct gpu_texture_info_t gpu_texture_info_t;
 typedef struct physics_t physics_t;
 
 // components
@@ -29,7 +30,11 @@ typedef struct camera_component_t {
 typedef struct model_component_t {
 	gpu_mesh_info_t* mesh_info;  // NULL: not drawn
 	gpu_shader_info_t* shader_info;
+	gpu_texture_info_t* texture; // NULL: untextured (white)
 	float tint[3];               // multiplies the mesh's vertex colors
+	// Per-shader texture settings. pbr: x = uv scale. skybox: x = exposure,
+	// y = rotation in radians.
+	float texture_params[4];
 } model_component_t;
 
 typedef struct physics_world_component_t {

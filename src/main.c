@@ -8,6 +8,7 @@
 #include "ui.h"
 
 #include "test.h"
+#include "texture_library.h"
 #include "debug.h"
 
 #include <stdint.h>
@@ -58,17 +59,32 @@ static bool smokeTestStep(smoke_test_t* smoke, scene_t* scene, ui_t* ui, wm_wind
 	scene_pointer_t center = { .x = width / 2, .y = height / 2, .width = width, .height = height };
 	const int f = smoke->frame;
 	switch (f) {
-		case 0:
+		case 0: {
 			smokeCheck(smoke, sceneGetObjectCount(scene) == 0 && sceneGetMode(scene) == UI_MODE_EDIT,
 				"scene starts empty in edit mode");
+			smokeCheck(smoke, sceneGetTextureCount(scene) == TEXTURE_COUNT - 1,
+				"every texture loads");
+			smokeCheck(smoke, sceneIsSkyVisible(scene), "the sky is drawn");
 			smokeCommand(ui, UI_COMMAND_ADD_BALL, -1);   // id 1, at the camera target
 			smokeCommand(ui, UI_COMMAND_ADD_CLOTH, -1);  // id 2, above it
+			ui_environment_settings_t environment = uiGetEnvironmentSettings(ui);
+			environment.sky = false;
+			uiSetEnvironmentSettings(ui, &environment);
 			break;
-		case 10:
+		}
+		case 10: {
 			smokeCheck(smoke, sceneGetObjectCount(scene) == 2, "ball and cloth added");
+			smokeCheck(smoke, !sceneIsSkyVisible(scene), "the Environment panel hides the sky");
+			ui_environment_settings_t environment = uiGetEnvironmentSettings(ui);
+			environment.sky = true;
+			uiSetEnvironmentSettings(ui, &environment);
+			ui_object_properties_t properties;
+			smokeCheck(smoke, sceneGetObjectProperties(scene, 2, &properties) &&
+				properties.texture == TEXTURE_CHECKER, "cloth starts with the checker texture");
 			smoke->authored_hash = sceneHashParticles(scene);
 			smokeCommand(ui, UI_COMMAND_SELECT, -1);
 			break;
+		}
 		case 20:
 			center.select_held = true;
 			sceneSetPointerOverride(scene, &center);
@@ -152,6 +168,8 @@ static bool smokeTestStep(smoke_test_t* smoke, scene_t* scene, ui_t* ui, wm_wind
 			sceneGetObjectProperties(scene, smoke->moved_id, &command.properties);
 			command.properties.size += 0.5f;
 			command.properties.mass = 2.0f;
+			command.properties.texture = TEXTURE_ROCK;
+			command.properties.uv_scale = 3.0f;
 			command.id = smoke->moved_id;
 			uiPushCommand(ui, &command);
 			break;
@@ -161,6 +179,8 @@ static bool smokeTestStep(smoke_test_t* smoke, scene_t* scene, ui_t* ui, wm_wind
 			const bool found = sceneGetObjectProperties(scene, smoke->moved_id, &properties);
 			smokeCheck(smoke, found && properties.mass == 2.0f && sceneGetObjectCount(scene) == 6 &&
 				sceneHashParticles(scene) != smoke->moved_hash, "inspector edits rebuild the object");
+			smokeCheck(smoke, found && properties.texture == TEXTURE_ROCK && properties.uv_scale == 3.0f,
+				"the inspector sets the texture");
 			smokeCommand(ui, UI_COMMAND_LOAD_DRAPE_DEMO, -1);
 			break;
 		}
@@ -324,14 +344,21 @@ int main(int argc, const char*argv[]) {
 	heap_t* heap = heapCreate(256 * 1024 * 1024); // 256 MBs
 	bool smoke_mode = false;
 	bool demo_mode = false;
+	bool drape_mode = false;
 	for (int i = 1; i < argc; ++i) {
 		if (strcmp(argv[i], "--test") == 0) {
 			const int failures = testPhysics(heap);
 			heapDestroy(heap);
 			return failures;
 		}
+		if (strcmp(argv[i], "--bench") == 0) {
+			testBenchmark(heap);
+			heapDestroy(heap);
+			return 0;
+		}
 		smoke_mode = smoke_mode || strcmp(argv[i], "--smoke") == 0;
 		demo_mode = demo_mode || strcmp(argv[i], "--demo") == 0;
+		drape_mode = drape_mode || strcmp(argv[i], "--drape") == 0;
 	}
 	if (!findShaderDirectory()) {
 		MessageBoxA(NULL, "Could not find the shaders folder (shaders\\pbr.vert.spv).\n\n"
@@ -349,6 +376,10 @@ int main(int argc, const char*argv[]) {
 	scene_t* scene = sceneCreate(heap, fs, window, renderer);
 	if (demo_mode) {
 		smokeCommand(ui, UI_COMMAND_LOAD_DEMO, -1);
+	}
+	if (drape_mode) {  // the drape demo, already playing
+		smokeCommand(ui, UI_COMMAND_LOAD_DRAPE_DEMO, -1);
+		smokeCommand(ui, UI_COMMAND_PLAY, -1);
 	}
 
 	smoke_test_t smoke = { 0 };

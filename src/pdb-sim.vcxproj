@@ -156,6 +156,7 @@
     <ClCompile Include="fs.c" />
     <ClCompile Include="gpu.c" />
     <ClCompile Include="hashtable.c" />
+    <ClCompile Include="image.c" />
     <ClCompile Include="heap.c" />
     <ClCompile Include="main.c" />
     <ClCompile Include="mat4f.c" />
@@ -167,6 +168,7 @@
     <ClCompile Include="semaphore.c" />
     <ClCompile Include="shader_loader.c" />
     <ClCompile Include="test.c" />
+    <ClCompile Include="texture_library.c" />
     <ClCompile Include="thread.c" />
     <ClCompile Include="timer.c" />
     <ClCompile Include="timer_object.c" />
@@ -216,6 +218,7 @@
     <ClInclude Include="fs.h" />
     <ClInclude Include="gpu.h" />
     <ClInclude Include="hashtable.h" />
+    <ClInclude Include="image.h" />
     <ClInclude Include="heap.h" />
     <ClInclude Include="mat4f.h" />
     <ClInclude Include="moremath.h" />
@@ -227,6 +230,7 @@
     <ClInclude Include="semaphore.h" />
     <ClInclude Include="shader_loader.h" />
     <ClInclude Include="test.h" />
+    <ClInclude Include="texture_library.h" />
     <ClInclude Include="thread.h" />
     <ClInclude Include="timer.h" />
     <ClInclude Include="timer_object.h" />

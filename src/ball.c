@@ -4,18 +4,28 @@
 #include "heap.h"
 #include "physics.h"
 
+#include <assert.h>
+
 #define BALL_SUBDIVISIONS 3
 #define BALL_VERTEX_COUNT 258
 #define BALL_TRIANGLE_COUNT 512
 #define BALL_INDEX_COUNT (BALL_TRIANGLE_COUNT * 3)
 #define BALL_MAX_EDGES 768
 #define BALL_RADIUS_SLACK 1.1f
+/* Render vertices: one per particle plus copies along the texture seam and at
+   the poles, which need a second uv (about 25 at 3 subdivisions). */
+#define BALL_MAX_RENDER_VERTICES (BALL_VERTEX_COUNT + 64)
+
+#include <math.h>
 
 typedef struct ball_t {
 	heap_t* heap;
 	gpu_mesh_info_t mesh;
-	vec3f_t* vertices;
-	uint16_t* indices;
+	gpu_vertex_t* vertices;
+	uint16_t* vertex_particles;  // particle (from first_particle) each vertex follows
+	int vertex_count;
+	uint16_t* render_indices;    // into vertices
+	uint16_t* indices;           // into the particles: the physics surface
 	physics_t* physics;
 	/* The ball's particles are consecutive ids starting here, one per vertex. */
 	physics_particle_id_t first_particle;
@@ -45,7 +55,11 @@ ball_t* ballCreate(heap_t* heap, physics_t* physics, const ball_info_t* info) {
 	if (!ballCanCreate(physics)) return NULL;
 	ball_t* ball = heapAlloc(heap, sizeof(*ball), 8);
 	ball->heap = heap;
-	ball->vertices = heapAlloc(heap, sizeof(vec3f_t) * BALL_VERTEX_COUNT * 3, _Alignof(vec3f_t));
+	ball->vertices = heapAlloc(heap, sizeof(gpu_vertex_t) * BALL_MAX_RENDER_VERTICES,
+		_Alignof(gpu_vertex_t));
+	ball->vertex_particles = heapAlloc(heap, sizeof(uint16_t) * BALL_MAX_RENDER_VERTICES,
+		_Alignof(uint16_t));
+	ball->render_indices = heapAlloc(heap, sizeof(uint16_t) * BALL_INDEX_COUNT, _Alignof(uint16_t));
 	ball->indices = heapAlloc(heap, sizeof(uint16_t) * BALL_INDEX_COUNT, _Alignof(uint16_t));
 	ball->physics = physics;
 	ballBuildMesh(ball, info->color);
@@ -58,12 +72,13 @@ ball_t* ballCreate(heap_t* heap, physics_t* physics, const ball_info_t* info) {
 		BALL_RADIUS_SLACK;
 	ball->particle_radius = particle_radius;
 	for (int i = 0; i < BALL_VERTEX_COUNT; ++i) {
-		vec3f_t local = vec3fScale(ball->vertices[i * 3], info->radius);
+		/* The first BALL_VERTEX_COUNT vertices are the particles, in order. */
+		const float* rest = ball->vertices[i].position;
+		vec3f_t local = vec3fScale((vec3f_t){ rest[0], rest[1], rest[2] }, info->radius);
 		vec3f_t position = vec3fAdd(info->position, local);
 		const physics_particle_id_t particle = physicsAddParticle(physics, position,
 			particle_radius, particle_mass);
 		if (i == 0) ball->first_particle = particle;
-		ball->vertices[i * 3] = position;
 	}
 	ballUpdateMesh(ball);
 	ballBuildConstraints(ball, physics, info);
@@ -73,6 +88,8 @@ ball_t* ballCreate(heap_t* heap, physics_t* physics, const ball_info_t* info) {
 void ballDestroy(ball_t* ball) {
 	if (!ball) return;
 	heapFree(ball->heap, ball->indices);
+	heapFree(ball->heap, ball->render_indices);
+	heapFree(ball->heap, ball->vertex_particles);
 	heapFree(ball->heap, ball->vertices);
 	heapFree(ball->heap, ball);
 }
@@ -85,20 +102,25 @@ void ballUpdateMesh(ball_t* ball) {
 	}
 	center = vec3fScale(center, 1.0f / (float)BALL_VERTEX_COUNT);
 
-	for (int i = 0; i < BALL_VERTEX_COUNT; ++i) {
-		vec3f_t position = positions[i];
+	for (int i = 0; i < ball->vertex_count; ++i) {
+		vec3f_t position = positions[ball->vertex_particles[i]];
 		vec3f_t normal = vec3fNorm(vec3fSub(position, center));
-		ball->vertices[i * 3] = vec3fAdd(position, vec3fScale(normal, ball->particle_radius));
-		ball->vertices[i * 3 + 1] = normal;
+		vec3f_t surface = vec3fAdd(position, vec3fScale(normal, ball->particle_radius));
+		gpu_vertex_t* vertex = &ball->vertices[i];
+		vertex->position[0] = surface.x; vertex->position[1] = surface.y; vertex->position[2] = surface.z;
+		vertex->normal[0] = normal.x; vertex->normal[1] = normal.y; vertex->normal[2] = normal.z;
 	}
 }
 
 float ballGetMaxCircumradius(ball_t* ball) {
 	float max_radius = 0.0f;
 	for (int i = 0; i < BALL_INDEX_COUNT; i += 3) {
-		vec3f_t a = ball->vertices[ball->indices[i] * 3];
-		vec3f_t b = ball->vertices[ball->indices[i + 1] * 3];
-		vec3f_t c = ball->vertices[ball->indices[i + 2] * 3];
+		const float* pa = ball->vertices[ball->indices[i]].position;
+		const float* pb = ball->vertices[ball->indices[i + 1]].position;
+		const float* pc = ball->vertices[ball->indices[i + 2]].position;
+		vec3f_t a = { pa[0], pa[1], pa[2] };
+		vec3f_t b = { pb[0], pb[1], pb[2] };
+		vec3f_t c = { pc[0], pc[1], pc[2] };
 		const float ab = vec3fDistance(a, b);
 		const float bc = vec3fDistance(b, c);
 		const float ca = vec3fDistance(c, a);
@@ -135,6 +157,82 @@ uint16_t ballGetMidpoint(vec3f_t* positions, int* vertex_count,
 	edge_midpoint[*edge_count] = midpoint;
 	(*edge_count)++;
 	return midpoint;
+}
+
+static int ballAddRenderVertex(ball_t* ball, uint16_t particle, vec3f_t direction,
+	vec3f_t color, float u, float v) {
+	assert(ball->vertex_count < BALL_MAX_RENDER_VERTICES);
+	const int index = ball->vertex_count++;
+	ball->vertex_particles[index] = particle;
+	ball->vertices[index] = (gpu_vertex_t){
+		.position = { direction.x, direction.y, direction.z },
+		.normal = { direction.x, direction.y, direction.z },
+		.color = { color.x, color.y, color.z },
+		/* Around the ball is twice as long as pole to pole: two texture repeats
+		   keep the texels square. */
+		.uv = { u * 2.0f, v }
+	};
+	return index;
+}
+
+/* Longitude/latitude uvs from the rest directions. A triangle across the seam
+   (u jumps from about 1 back to 0) gets copies of its low-u vertices at u + 1,
+   and each pole gets a copy per triangle at that triangle's longitude, so no
+   triangle stretches the texture across the whole ball. */
+static void ballBuildRenderVertices(ball_t* ball, const vec3f_t* directions, vec3f_t color) {
+	const float two_pi = 6.28318531f;
+	float us[BALL_VERTEX_COUNT];
+	float vs[BALL_VERTEX_COUNT];
+	int wrapped[BALL_VERTEX_COUNT];
+	ball->vertex_count = 0;
+	for (int i = 0; i < BALL_VERTEX_COUNT; ++i) {
+		const vec3f_t d = directions[i];
+		float u = atan2f(d.z, d.x) / two_pi;
+		if (u < 0.0f) u += 1.0f;
+		us[i] = u;
+		vs[i] = acosf(__max(-1.0f, __min(1.0f, d.y))) / 3.14159265f;
+		wrapped[i] = -1;
+		ballAddRenderVertex(ball, (uint16_t)i, d, color, us[i], vs[i]);
+	}
+	for (int t = 0; t < BALL_INDEX_COUNT; t += 3) {
+		bool pole[3];
+		float u_min = 1.0f, u_max = 0.0f;
+		for (int k = 0; k < 3; ++k) {
+			const uint16_t i = ball->indices[t + k];
+			pole[k] = fabsf(directions[i].y) > 0.9999f;
+			if (!pole[k]) {
+				u_min = __min(u_min, us[i]);
+				u_max = __max(u_max, us[i]);
+			}
+		}
+		const bool wrap = u_max - u_min > 0.5f;
+		float corner_u[3];
+		float u_sum = 0.0f;
+		int u_count = 0;
+		for (int k = 0; k < 3; ++k) {
+			const uint16_t i = ball->indices[t + k];
+			corner_u[k] = us[i] + (wrap && us[i] < 0.5f ? 1.0f : 0.0f);
+			if (!pole[k]) {
+				u_sum += corner_u[k];
+				++u_count;
+			}
+		}
+		for (int k = 0; k < 3; ++k) {
+			const uint16_t i = ball->indices[t + k];
+			int vertex = i;
+			if (pole[k]) {
+				vertex = ballAddRenderVertex(ball, i, directions[i], color,
+					u_count ? u_sum / (float)u_count : 0.0f, vs[i]);
+			}
+			else if (corner_u[k] != us[i]) {
+				if (wrapped[i] < 0) {
+					wrapped[i] = ballAddRenderVertex(ball, i, directions[i], color, corner_u[k], vs[i]);
+				}
+				vertex = wrapped[i];
+			}
+			ball->render_indices[t + k] = (uint16_t)vertex;
+		}
+	}
 }
 
 void ballBuildMesh(ball_t* ball, vec3f_t color) {
@@ -184,18 +282,14 @@ void ballBuildMesh(ball_t* ball, vec3f_t color) {
 		for (int i = 0; i < triangle_count * 3; ++i) triangles_a[i] = triangles_b[i];
 	}
 
-	for (int i = 0; i < BALL_VERTEX_COUNT; ++i) {
-		ball->vertices[i * 3] = positions[i];
-		ball->vertices[i * 3 + 1] = positions[i];
-		ball->vertices[i * 3 + 2] = color;
-	}
 	for (int i = 0; i < BALL_INDEX_COUNT; ++i) ball->indices[i] = triangles_a[i];
-	ball->mesh.layout = GPU_MESH_LAYOUT_TRI_P444_N444_C444_I2;
+	ballBuildRenderVertices(ball, positions, color);
+	ball->mesh.layout = GPU_MESH_LAYOUT_TRI_P444_N444_C444_U44_I2;
 	ball->mesh.dynamic = true;
 	ball->mesh.id = gpuMeshInfoNextId();
 	ball->mesh.vtx_data = ball->vertices;
-	ball->mesh.vtx_data_size = sizeof(vec3f_t) * BALL_VERTEX_COUNT * 3;
-	ball->mesh.idx_data = ball->indices;
+	ball->mesh.vtx_data_size = sizeof(gpu_vertex_t) * ball->vertex_count;
+	ball->mesh.idx_data = ball->render_indices;
 	ball->mesh.idx_data_size = sizeof(uint16_t) * BALL_INDEX_COUNT;
 
 	heapFree(heap, edge_midpoint);

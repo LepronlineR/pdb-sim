@@ -3,6 +3,7 @@
 layout (location = 0) in vec3 inWorldPos;
 layout (location = 1) in vec3 inNormal;
 layout (location = 2) in vec3 inAlbedo;
+layout (location = 3) in vec2 inUv;
 
 layout (row_major, binding = 0) uniform UBO
 {
@@ -13,7 +14,11 @@ layout (row_major, binding = 0) uniform UBO
 	vec4 lightDirectionMetallic;
 	vec4 lightColorAmbient;
 	vec4 material;
+	vec4 textureParams;  // x: uv scale
 } ubo;
+
+// sRGB, so samples are linear; untextured models get a white texel.
+layout (binding = 1) uniform sampler2D albedoMap;
 
 layout (location = 0) out vec4 outFragColor;
 
@@ -62,7 +67,8 @@ vec3 acesTonemap(vec3 color)
 
 void main()
 {
-	vec3 albedo = pow(clamp(inAlbedo * ubo.material.rgb, 0.0, 1.0), vec3(2.2));
+	vec3 albedo = pow(clamp(inAlbedo * ubo.material.rgb, 0.0, 1.0), vec3(2.2)) *
+		texture(albedoMap, inUv).rgb;
 	float roughness = clamp(ubo.cameraPositionRoughness.w, 0.04, 1.0);
 	float metallic = clamp(ubo.lightDirectionMetallic.w, 0.0, 1.0);
 	vec3 lightColor = ubo.lightColorAmbient.rgb;

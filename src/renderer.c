@@ -30,6 +30,8 @@ typedef struct command_model_t {
 	uint64_t mesh_id;
 	gpu_mesh_layout_t mesh_layout;
 	gpu_shader_info_t* shader;
+	gpu_texture_info_t* texture;  // NULL: the default white texture
+	uint64_t texture_id;          // copied like mesh_id
 	gpu_uniform_buffer_info_t uniform_buffer;
 	void* dynamic_vtx_data;
 	size_t dynamic_vtx_size;
@@ -43,6 +45,8 @@ typedef struct draw_instance_t {
 	ecs_entity_t entity;
 	gpu_uniform_buffer_t** uniform_buffers;
 	gpu_descriptor_t** descriptors;
+	gpu_shader_t* shader;     // what the descriptors were made for
+	gpu_texture_t* texture;
 	int frame_counter;
 } draw_instance_t;
 
@@ -60,6 +64,13 @@ typedef struct draw_shader_t {
 	int frame_counter;
 } draw_shader_t;
 
+typedef struct draw_texture_t {
+	gpu_texture_info_t* info;
+	uint64_t info_id;
+	gpu_texture_t* texture;
+	int frame_counter;
+} draw_texture_t;
+
 typedef struct renderer_t {
 	heap_t* heap;
 	wm_window_t* window;
@@ -74,9 +85,13 @@ typedef struct renderer_t {
 	int instance_count;
 	int mesh_count;
 	int shader_count;
+	int texture_count;
 	draw_instance_t instances[RENDERER_MAX_DRAW_AMOUNT];
 	draw_mesh_t meshes[RENDERER_MAX_DRAW_AMOUNT];
 	draw_shader_t shaders[RENDERER_MAX_DRAW_AMOUNT];
+	draw_texture_t textures[RENDERER_MAX_DRAW_AMOUNT];
+	/* Bound for draws without a texture, so a textured shader always has one. */
+	gpu_texture_t* white_texture;
 } renderer_t;
 
 renderer_t* rendererCreate(heap_t* heap, wm_window_t* window) {
@@ -98,7 +113,7 @@ void rendererDestroy(renderer_t* render) {
 	heapFree(render->heap, render);
 }
 
-void rendererModelAdd(renderer_t* render, ecs_entity_t* entity, gpu_mesh_info_t* mesh, gpu_shader_info_t* shader, gpu_uniform_buffer_info_t* uniform) {
+void rendererModelAdd(renderer_t* render, ecs_entity_t* entity, gpu_mesh_info_t* mesh, gpu_shader_info_t* shader, gpu_texture_info_t* texture, gpu_uniform_buffer_info_t* uniform) {
 	command_model_t* command = heapAlloc(render->heap, sizeof(command_model_t), 8);
 	command->type = RENDERER_COMMAND_DRAW_MODEL;
 	command->entity = *entity;
@@ -106,6 +121,8 @@ void rendererModelAdd(renderer_t* render, ecs_entity_t* entity, gpu_mesh_info_t*
 	command->mesh_id = mesh->id;
 	command->mesh_layout = mesh->layout;
 	command->shader = shader;
+	command->texture = texture;
+	command->texture_id = texture ? texture->id : 0;
 	command->uniform_buffer.size = uniform->size;
 	command->uniform_buffer.data = heapAlloc(render->heap, uniform->size, 8);
 	memcpy(command->uniform_buffer.data, uniform->data, uniform->size);
@@ -144,6 +161,9 @@ int rendererThreadFunc(void* ID) {
 	render->gpu_frame_count = gpuGetFrameCount(render->gpu);
 	ui_t* ui = uiGet(render->window);
 	uiRendererInitialize(ui, render->gpu);
+	uint32_t white_pixel = 0xffffffff;
+	gpu_texture_info_t white_info = { .width = 1, .height = 1, .pixels = &white_pixel };
+	render->white_texture = gpuCreateTexture(render->gpu, &white_info);
 
 	gpu_cmd_buff_t* cmd_buff = NULL;
 	gpu_pipeline_t* p_pipeline = NULL;
@@ -181,7 +201,7 @@ int rendererThreadFunc(void* ID) {
 					break;
 				}
 				draw_mesh_t* mesh = rendererMeshModelCommand(render, model);
-				draw_instance_t* instance = rendererInstanceModelCommand(render, model, shader->shader);
+				draw_instance_t* instance = rendererInstanceModelCommand(render, model, shader);
 
 				heapFree(render->heap, model->uniform_buffer.data);
 				if (model->dynamic_vtx_data) {
@@ -211,6 +231,10 @@ int rendererThreadFunc(void* ID) {
 	uiRendererShutdown(ui);
 	render->frame_counter += render->gpu_frame_count + 1;
 	rendererDestroyStaleData(render);
+	if (render->white_texture) {
+		gpuDestroyTexture(render->gpu, render->white_texture);
+		render->white_texture = NULL;
+	}
 	gpuDestroy(render->gpu);
 	render->gpu = NULL;
 
@@ -244,7 +268,8 @@ draw_shader_t* rendererShaderModelCommand(renderer_t* render, command_model_t* c
 	if (shader->shader != NULL && shader->pipeline == NULL) {
 		gpu_pipeline_info_t pipeline_info = {
 			.shader = shader->shader,
-			.mesh_layout = command->mesh_layout
+			.mesh_layout = command->mesh_layout,
+			.background = shader->info->background
 		};
 		shader->pipeline = gpuCreatePipeline(render->gpu, &pipeline_info);
 	}
@@ -282,7 +307,42 @@ draw_mesh_t* rendererMeshModelCommand(renderer_t* render, command_model_t* comma
 	return mesh;
 }
 
-draw_instance_t* rendererInstanceModelCommand(renderer_t* render, command_model_t* command, gpu_shader_t* shader) {
+gpu_texture_t* rendererTextureModelCommand(renderer_t* render, command_model_t* command) {
+	if (command->texture == NULL) {
+		return render->white_texture;
+	}
+	draw_texture_t* texture = NULL;
+	for (int x = 0; x < render->texture_count; x++) {
+		if (render->textures[x].info == command->texture &&
+			render->textures[x].info_id == command->texture_id) { // found texture
+			texture = &render->textures[x];
+			break;
+		}
+	}
+
+	if (texture == NULL) {
+		assert(render->texture_count < _countof(render->textures));
+		texture = &render->textures[render->texture_count++];
+		texture->info = command->texture;
+		texture->info_id = command->texture_id;
+		texture->texture = gpuCreateTexture(render->gpu, texture->info);
+	}
+
+	texture->frame_counter = render->frame_counter;
+	return texture->texture ? texture->texture : render->white_texture;
+}
+
+static void rendererInstanceDestroyDescriptors(renderer_t* render, draw_instance_t* instance) {
+	for (int frame = 0; frame < render->gpu_frame_count; frame++) {
+		if (instance->descriptors[frame]) {
+			gpuDestroyDescriptorSets(render->gpu, instance->descriptors[frame]);
+			instance->descriptors[frame] = NULL;
+		}
+	}
+}
+
+draw_instance_t* rendererInstanceModelCommand(renderer_t* render, command_model_t* command, draw_shader_t* draw_shader) {
+	gpu_shader_t* shader = draw_shader->shader;
 	draw_instance_t* instance = NULL;
 	for (int x = 0; x < render->instance_count; x++) {
 		if (memcmp(&render->instances[x].entity, &command->entity, sizeof(ecs_entity_t)) == 0) { // found instance
@@ -297,30 +357,47 @@ draw_instance_t* rendererInstanceModelCommand(renderer_t* render, command_model_
 		instance->entity = command->entity;
 		instance->uniform_buffers = heapAlloc(render->heap, sizeof(gpu_uniform_buffer_t*) * render->gpu_frame_count, 8);
 		instance->descriptors = heapAlloc(render->heap, sizeof(gpu_descriptor_t*) * render->gpu_frame_count, 8);
-		// assign the ubuffs and descriptors
+		instance->shader = NULL;
+		instance->texture = NULL;
 		for (int x = 0; x < render->gpu_frame_count; x++) {
 			instance->uniform_buffers[x] = gpuCreateUniformBuffer(render->gpu, &command->uniform_buffer);
+			instance->descriptors[x] = NULL;
+		}
+	}
+
+	/* Descriptors point at the shader's layout and the texture, so they are
+	   rebuilt when either changes (e.g. a new texture picked in the inspector).
+	   One frame is in flight at most and this runs while recording the next, so
+	   the old sets are no longer in use. */
+	gpu_texture_t* texture = draw_shader->info->texture_count > 0 ? rendererTextureModelCommand(render, command) : NULL;
+	if (instance->shader != shader || instance->texture != texture || instance->descriptors[0] == NULL) {
+		rendererInstanceDestroyDescriptors(render, instance);
+		for (int x = 0; x < render->gpu_frame_count; x++) {
 			gpu_descriptor_info_t descriptor_info = {
 				.shader = shader,
 				.uniform_buffers = &instance->uniform_buffers[x],
-				.uniform_buffer_count = 1
+				.uniform_buffer_count = 1,
+				.textures = texture ? &texture : NULL,
+				.texture_count = texture ? 1 : 0
 			};
 			instance->descriptors[x] = gpuCreateDescriptorSets(render->gpu, &descriptor_info);
 		}
+		instance->shader = shader;
+		instance->texture = texture;
 	}
 
 	int frame_idx = render->frame_counter % render->gpu_frame_count;
 	gpuUpdateUniformBuffer(render->gpu, instance->uniform_buffers[frame_idx], command->uniform_buffer.data, command->uniform_buffer.size);
 	instance->frame_counter = render->frame_counter;
-	
+
 	return instance;
 }
 
 void rendererDestroyStaleData(renderer_t* render) {
 	for (int x = render->instance_count - 1; x >= 0; x--) { // past frames (used instance value)
 		if (render->instances[x].frame_counter + render->gpu_frame_count <= render->frame_counter) {
+			rendererInstanceDestroyDescriptors(render, &render->instances[x]);
 			for (int frame = 0; frame < render->gpu_frame_count; frame++) {
-				gpuDestroyDescriptorSets(render->gpu, render->instances[x].descriptors[frame]);
 				gpuDestroyUniformBuffer(render->gpu, render->instances[x].uniform_buffers[frame]);
 			}
 			heapFree(render->heap, render->instances[x].descriptors);
@@ -335,6 +412,16 @@ void rendererDestroyStaleData(renderer_t* render) {
 			gpuDestroyMesh(render->gpu, render->meshes[x].mesh);
 			render->meshes[x] = render->meshes[render->mesh_count - 1];
 			render->mesh_count--;
+		}
+	}
+
+	for (int x = render->texture_count - 1; x >= 0; x--) {
+		if (render->textures[x].frame_counter + render->gpu_frame_count <= render->frame_counter) {
+			if (render->textures[x].texture) {
+				gpuDestroyTexture(render->gpu, render->textures[x].texture);
+			}
+			render->textures[x] = render->textures[render->texture_count - 1];
+			render->texture_count--;
 		}
 	}
 

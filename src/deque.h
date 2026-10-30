@@ -6,7 +6,8 @@
 *	  well as remove elements at the front and back. 
 *     (both operations are O(1))
 *	- the capacity is static
-*	- thread safe
+*	- thread safe: any number of threads may push and pop; pops block while
+*	  the deque is empty and pushes while it is full
 */
 
 #define INITIAL_DEQUE_CAPACITY 16

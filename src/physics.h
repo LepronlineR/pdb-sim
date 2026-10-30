@@ -21,6 +21,17 @@ typedef struct physics_stats_t {
 	int grabbed_count;
 } physics_stats_t;
 
+// Where the last physicsUpdate spent its time, in milliseconds.
+typedef struct physics_profile_t {
+	float detect_ms;       // contact candidates (spatial hash)
+	float constraints_ms;  // distance and volume constraints, all substeps
+	float contacts_ms;     // contact and grab constraints, all substeps
+	float integrate_ms;    // predict and rebuild velocities
+	float velocity_ms;     // friction and restitution pass
+	float damping_ms;      // deformation damping and drag
+	float total_ms;
+} physics_profile_t;
+
 typedef struct heap_t heap_t;
 typedef struct ecs_t ecs_t;
 
@@ -107,6 +118,7 @@ bool physicsHasCapacity(physics_t* physics, int particle_count,
 	int distance_constraint_count, int soft_body_count);
 void physicsUpdate(physics_t* physics, float delta_seconds);
 physics_stats_t physicsGetStats(physics_t* physics);
+physics_profile_t physicsGetProfile(physics_t* physics);
 
 
 #endif

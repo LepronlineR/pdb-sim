@@ -32,4 +32,8 @@ void testThreading();
 // RETURN: the number of failed tests
 int testPhysics(heap_t* heap);
 
+// Times representative physics scenes headless and prints the average
+// milliseconds per 60 Hz frame for each phase of the step.
+int testBenchmark(heap_t* heap);
+
 #endif

@@ -5,6 +5,7 @@ extern "C" {
 #include "gpu.h"
 #include "heap.h"
 #include "mutex.h"
+#include "texture_library.h"
 #include "ui.h"
 #include "wm.h"
 }
@@ -37,6 +38,7 @@ struct ui_t {
 
 	ui_scene_view_t view;
 	ui_sim_settings_t settings;
+	ui_environment_settings_t environment;
 
 	// The inspector edits a copy of the selected object's properties, reloaded
 	// when the selection or the scene-side revision changes.
@@ -68,6 +70,10 @@ extern "C" ui_t* uiCreate(heap_t* heap, wm_window_t* window) {
 	ui->settings.dynamic_friction = 0.4f;
 	ui->settings.restitution = 0.2f;
 	ui->settings.rolling_resistance = 0.15f;
+	ui->environment.sky = true;
+	ui->environment.sky_exposure = 1.0f;
+	ui->environment.sky_rotation = 0.0f;
+	ui->environment.ground_texture = TEXTURE_GRASS;
 	active_ui = ui;
 	wmSetCursorCaptured(window, false);
 	wmSetMessageCallback(window, uiWindowMessage, ui);
@@ -138,6 +144,55 @@ extern "C" ui_sim_settings_t uiGetSimSettings(ui_t* ui) {
 	ui_sim_settings_t settings = ui->settings;
 	mutexUnlock(ui->mutex);
 	return settings;
+}
+
+extern "C" ui_environment_settings_t uiGetEnvironmentSettings(ui_t* ui) {
+	if (!ui) {
+		return ui_environment_settings_t{ true, 1.0f, 0.0f, TEXTURE_GRASS };
+	}
+	mutexLock(ui->mutex);
+	ui_environment_settings_t environment = ui->environment;
+	mutexUnlock(ui->mutex);
+	return environment;
+}
+
+extern "C" void uiSetEnvironmentSettings(ui_t* ui, const ui_environment_settings_t* settings) {
+	if (!ui) return;
+	mutexLock(ui->mutex);
+	ui->environment = *settings;
+	mutexUnlock(ui->mutex);
+}
+
+/* Lists the textures an object or the ground can use (the sky panorama is not
+   one of them). */
+static bool uiTextureCombo(const char* label, int* texture) {
+	bool changed = false;
+	if (ImGui::BeginCombo(label, textureLibraryName((texture_id_t)*texture))) {
+		for (int id = TEXTURE_NONE; id < TEXTURE_SKY; ++id) {
+			if (ImGui::Selectable(textureLibraryName((texture_id_t)id), id == *texture)) {
+				*texture = id;
+				changed = true;
+			}
+		}
+		ImGui::EndCombo();
+	}
+	return changed;
+}
+
+static void uiDrawEnvironment(ui_t* ui) {
+	ImGui::SetNextWindowPos(ImVec2(12.0f, 404.0f), ImGuiCond_FirstUseEver);
+	ImGui::SetNextWindowSize(ImVec2(330.0f, 150.0f), ImGuiCond_FirstUseEver);
+	ImGui::Begin("Environment");
+	ui_environment_settings_t* environment = &ui->environment;
+	ImGui::PushItemWidth(170.0f);
+	ImGui::Checkbox("Sky", &environment->sky);
+	ImGui::BeginDisabled(!environment->sky);
+	ImGui::SliderFloat("Sky exposure", &environment->sky_exposure, 0.2f, 3.0f, "%.2f");
+	ImGui::SliderFloat("Sky rotation", &environment->sky_rotation, -180.0f, 180.0f, "%.0f deg");
+	ImGui::EndDisabled();
+	uiTextureCombo("Ground", &environment->ground_texture);
+	ImGui::PopItemWidth();
+	ImGui::End();
 }
 
 static void uiDrawToolbar(ui_t* ui) {
@@ -309,7 +364,7 @@ static void uiDrawInspector(ui_t* ui) {
 		changed |= ImGui::DragFloat("Size", &p->size, 0.02f, 0.5f, 10.0f, "%.2f m");
 		changed |= ImGui::InputFloat("Stretch compl.", &p->stretch_compliance, 1.0e-4f, 1.0e-3f, "%.2e");
 		changed |= ImGui::InputFloat("Shear compl.", &p->shear_compliance, 1.0e-4f, 1.0e-3f, "%.2e");
-		changed |= ImGui::InputFloat("Bend compl.", &p->bending_compliance, 1.0e-3f, 1.0e-2f, "%.2e");
+		changed |= ImGui::InputFloat("Bend compl.", &p->bending_compliance, 0.05f, 0.5f, "%.2f");
 		changed |= ImGui::SliderFloat("Air drag", &p->drag, 0.0f, 3.0f, "%.2f /s");
 		changed |= uiPinCombo(&p->pin);
 		ImGui::Text("Pinned points: %d", p->pin_count);
@@ -324,6 +379,11 @@ static void uiDrawInspector(ui_t* ui) {
 	if (p->kind != UI_OBJECT_SPHERE) {
 		changed |= ImGui::SliderFloat("Velocity retention", &p->velocity_retention, 0.0f, 1.0f, "%.2f");
 	}
+	ImGui::SeparatorText("Material");
+	changed |= uiTextureCombo("Texture", &p->texture);
+	ImGui::BeginDisabled(p->texture == TEXTURE_NONE);
+	changed |= ImGui::DragFloat("Texture scale", &p->uv_scale, 0.02f, 0.1f, 20.0f, "%.2f");
+	ImGui::EndDisabled();
 	ImGui::PopItemWidth();
 	ImGui::EndDisabled();
 	if (changed && editing) {
@@ -397,7 +457,7 @@ extern "C" bool uiRendererInitialize(ui_t* ui, gpu_t* gpu) {
 	init_info.ImageCount = gpuGetSwapchainImageCount(gpu);
 	init_info.PipelineInfoMain.RenderPass = gpuGetRenderPass(gpu);
 	init_info.PipelineInfoMain.Subpass = 0;
-	init_info.PipelineInfoMain.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+	init_info.PipelineInfoMain.MSAASamples = gpuGetSampleCount(gpu);
 	init_info.CheckVkResultFn = uiCheckVulkanResult;
 	bool vulkan_ready = win32_ready && ImGui_ImplVulkan_Init(&init_info);
 	ui->initialized = vulkan_ready;
@@ -421,6 +481,7 @@ extern "C" void uiRendererDraw(ui_t* ui, gpu_t* gpu,
 	uiDrawToolbar(ui);
 	uiDrawHierarchy(ui);
 	uiDrawInspector(ui);
+	uiDrawEnvironment(ui);
 	/* Delete deletes the selection unless a text field has the keyboard. */
 	if (ui->view.selected_id >= 0 && !ImGui::GetIO().WantTextInput &&
 		ImGui::IsKeyPressed(ImGuiKey_Delete, false)) {

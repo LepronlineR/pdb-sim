@@ -543,8 +543,91 @@ static void testPhysicsClothHangsFromCustomPin(heap_t* heap) {
 	physicsDestroy(scene.physics);
 }
 
+// ================================================
+//					DATA STRUCTURES
+// ================================================
+
+#include "deque.h"
+#include "hashtable.h"
+
+/* Random inserts, overwrites and removals checked against a plain array, so
+   growth and backward-shift deletion are both exercised. */
+static void testHashTable(heap_t* heap) {
+	enum { KEYS = 4096, OPERATIONS = 200000 };
+	uint64_t* reference = heapAlloc(heap, sizeof(uint64_t) * KEYS, 8);
+	bool* present = heapAlloc(heap, sizeof(bool) * KEYS, 8);
+	memset(present, 0, sizeof(bool) * KEYS);
+	hash_table_t* table = hashTableCreate(heap, 4);
+	uint32_t random = 12345u;
+	int mismatches = 0;
+	for (int op = 0; op < OPERATIONS; ++op) {
+		random = random * 1664525u + 1013904223u;
+		/* Keys spread over the high bits too, like packed pairs. */
+		const int k = (int)((random >> 8) % KEYS);
+		const uint64_t key = hashTablePairKey((uint32_t)k * 7u, (uint32_t)k * 13u + 1u);
+		if ((random & 3u) == 0u) {
+			const bool removed = hashTableRemove(table, key);
+			if (removed != present[k]) ++mismatches;
+			present[k] = false;
+		}
+		else {
+			hashTableSet(table, key, (uint64_t)op);
+			reference[k] = (uint64_t)op;
+			present[k] = true;
+		}
+	}
+	int expected_count = 0;
+	for (int k = 0; k < KEYS; ++k) {
+		const uint64_t key = hashTablePairKey((uint32_t)k * 7u, (uint32_t)k * 13u + 1u);
+		uint64_t value = 0;
+		const bool found = hashTableGet(table, key, &value);
+		if (found != present[k] || (found && value != reference[k])) ++mismatches;
+		expected_count += present[k];
+	}
+	if (hashTableCount(table) != expected_count) ++mismatches;
+	if (hashTablePairKey(3, 9) != hashTablePairKey(9, 3)) ++mismatches;
+	hashTableClear(table);
+	if (hashTableCount(table) != 0 || hashTableContains(table, hashTablePairKey(0, 1))) ++mismatches;
+	char detail[96];
+	sprintf_s(detail, sizeof(detail), "%d operations on %d keys, %d mismatches", OPERATIONS, KEYS,
+		mismatches);
+	testCheck(mismatches == 0, "hash table matches a reference", detail);
+	hashTableDestroy(table);
+	heapFree(heap, present);
+	heapFree(heap, reference);
+}
+
+/* Order at both ends, and FIFO use long enough to wrap the slot index many
+   times over (a capacity that is not a power of two). */
+static void testDeque(heap_t* heap) {
+	deque_t* deque = dequeCreate(heap, 5);
+	int values[8];
+	for (int i = 0; i < 8; ++i) values[i] = i;
+	bool ordered = true;
+	dequePushBack(deque, &values[1]);
+	dequePushBack(deque, &values[2]);
+	dequePushFront(deque, &values[0]);
+	dequePushBack(deque, &values[3]);
+	ordered = ordered && dequePeekFront(deque) == &values[0] && dequeGetCurrentSize(deque) == 4;
+	ordered = ordered && dequePopBack(deque) == &values[3];
+	ordered = ordered && dequePopFront(deque) == &values[0];
+	ordered = ordered && dequePopFront(deque) == &values[1];
+	ordered = ordered && dequePopBack(deque) == &values[2];
+	ordered = ordered && dequeGetCurrentSize(deque) == 0;
+	for (int round = 0; round < 100000 && ordered; ++round) {
+		dequePushBack(deque, &values[round % 8]);
+		dequePushBack(deque, &values[(round + 1) % 8]);
+		ordered = dequePopFront(deque) == &values[round % 8] &&
+			dequePopFront(deque) == &values[(round + 1) % 8];
+	}
+	testCheck(ordered, "deque keeps order at both ends", "push/pop front and back, 200000 FIFO items");
+	dequeDestroy(deque);
+}
+
 int testPhysics(heap_t* heap) {
 	test_failures = 0;
+	testHashTable(heap);
+	testDeque(heap);
 	testPhysicsClothHangsFromCustomPin(heap);
 	testPhysicsClothDrapesOverSphere(heap);
 	testPhysicsPile(heap);
@@ -555,4 +638,108 @@ int testPhysics(heap_t* heap) {
 	testPhysicsGrab(heap);
 	debugPrintConsole("%d physics test(s) failed\n", test_failures);
 	return test_failures;
+}
+
+// ================================================
+//					PHYSICS BENCHMARK
+// ================================================
+
+typedef enum bench_scene_t {
+	BENCH_DRAPE,   // the drape demo: a 48 x 48 cloth over a solid sphere
+	BENCH_DEMO,    // the trampoline demo: two cloths and four balls
+	BENCH_PILE,    // sixteen balls dropped in a heap
+	BENCH_SHEET,   // the largest cloth (64 x 64), hanging from its corners
+	BENCH_SCENE_COUNT
+} bench_scene_t;
+
+static const char* bench_scene_names[BENCH_SCENE_COUNT] = {
+	"drape 48x48 over sphere", "trampoline demo", "pile of 16 balls", "sheet 64x64 corners"
+};
+
+static void benchBuildScene(physics_test_scene_t* scene, bench_scene_t which) {
+	switch (which) {
+		case BENCH_DRAPE: {
+			physicsAddSphereCollider(scene->physics, (vec3f_t){ 0, 1.2f, 0 }, 1.2f);
+			cloth_info_t cloth = clothInfoDefault((vec3f_t){ 0, 3.6f, 0 }, vec3fOne());
+			cloth.resolution = 48;
+			cloth.size = 4.4f;
+			cloth.pin = CLOTH_PIN_NONE;
+			testSceneAddCloth(scene, cloth);
+			break;
+		}
+		case BENCH_DEMO: {
+			cloth_info_t trampoline = clothInfoDefault((vec3f_t){ 0, 3, 0 }, vec3fOne());
+			trampoline.pin = CLOTH_PIN_BORDER;
+			testSceneAddCloth(scene, trampoline);
+			cloth_info_t banner = clothInfoDefault((vec3f_t){ -4.5f, 5.5f, 1.5f }, vec3fOne());
+			banner.resolution = 24;
+			banner.size = 2.5f;
+			banner.pin = CLOTH_PIN_EDGE;
+			testSceneAddCloth(scene, banner);
+			testSceneAddBall(scene, (vec3f_t){ -.85f, 5, .45f }, 1.0f, 1.0f);
+			testSceneAddBall(scene, (vec3f_t){ .85f, 6.5f, -.45f }, 1.5f, 1.0f);
+			testSceneAddBall(scene, (vec3f_t){ -3, 1.2f, -3 }, 0.4f, 0.6f);
+			testSceneAddBall(scene, (vec3f_t){ 4.5f, 1.2f, 1 }, 0.5f, 1.0f);
+			break;
+		}
+		case BENCH_PILE:
+			for (int i = 0; i < 16; ++i) {
+				testSceneAddBall(scene, (vec3f_t){ (float)(i % 4) * 1.6f - 2.4f,
+					2.0f + (float)(i / 4) * 2.3f, (float)(i % 3) * 0.6f - 0.6f }, 1.0f, 1.0f);
+			}
+			break;
+		default: {
+			cloth_info_t sheet = clothInfoDefault((vec3f_t){ 0, 6, 0 }, vec3fOne());
+			sheet.resolution = 64;
+			sheet.size = 5.0f;
+			testSceneAddCloth(scene, sheet);
+			break;
+		}
+	}
+}
+
+/* Each scene runs for ten simulated seconds at 60 Hz, twice; the faster run's
+   averages are reported (the first second, while things fall, is included). */
+int testBenchmark(heap_t* heap) {
+	enum { BENCH_FRAMES = 600, BENCH_RUNS = 2 };
+	debugPrintConsole("%-26s %8s %8s %8s %8s %8s %8s %8s %8s\n", "scene", "total", "max",
+		"detect", "constr", "contact", "integr", "veloc", "damp");
+	for (int which = 0; which < BENCH_SCENE_COUNT; ++which) {
+		physics_profile_t best = { .total_ms = FLT_MAX };
+		float best_max = 0.0f;
+		int particles = 0, contacts = 0;
+		for (int run = 0; run < BENCH_RUNS; ++run) {
+			physics_test_scene_t scene = { .heap = heap, .physics = physicsCreate(heap) };
+			benchBuildScene(&scene, (bench_scene_t)which);
+			physics_profile_t sum = { 0 };
+			float max_ms = 0.0f;
+			int contact_sum = 0;
+			for (int frame = 0; frame < BENCH_FRAMES; ++frame) {
+				physicsUpdate(scene.physics, 1.0f / 60.0f);
+				const physics_profile_t p = physicsGetProfile(scene.physics);
+				sum.detect_ms += p.detect_ms;
+				sum.constraints_ms += p.constraints_ms;
+				sum.contacts_ms += p.contacts_ms;
+				sum.integrate_ms += p.integrate_ms;
+				sum.velocity_ms += p.velocity_ms;
+				sum.damping_ms += p.damping_ms;
+				sum.total_ms += p.total_ms;
+				max_ms = fmaxf(max_ms, p.total_ms);
+				contact_sum += physicsGetStats(scene.physics).contact_count;
+			}
+			if (sum.total_ms < best.total_ms) {
+				best = sum;
+				best_max = max_ms;
+				particles = physicsGetStats(scene.physics).particle_count;
+				contacts = contact_sum / BENCH_FRAMES;
+			}
+			physicsDestroy(scene.physics);
+		}
+		const float n = (float)BENCH_FRAMES;
+		debugPrintConsole("%-26s %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f %8.3f   (%d particles, %d contacts)\n",
+			bench_scene_names[which], best.total_ms / n, best_max, best.detect_ms / n,
+			best.constraints_ms / n, best.contacts_ms / n, best.integrate_ms / n,
+			best.velocity_ms / n, best.damping_ms / n, particles, contacts);
+	}
+	return 0;
 }

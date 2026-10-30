@@ -138,6 +138,12 @@
     <ClCompile Include="physics.c">
       <Filter>Source Files\sys</Filter>
     </ClCompile>
+    <ClCompile Include="image.c">
+      <Filter>Source Files\sys</Filter>
+    </ClCompile>
+    <ClCompile Include="texture_library.c">
+      <Filter>Source Files\sys</Filter>
+    </ClCompile>
     <ClCompile Include="renderer.c">
       <Filter>Source Files\sys</Filter>
     </ClCompile>
@@ -222,6 +228,12 @@
       <Filter>Header Files\math</Filter>
     </ClInclude>
     <ClInclude Include="gpu.h">
+      <Filter>Header Files\sys</Filter>
+    </ClInclude>
+    <ClInclude Include="image.h">
+      <Filter>Header Files\sys</Filter>
+    </ClInclude>
+    <ClInclude Include="texture_library.h">
       <Filter>Header Files\sys</Filter>
     </ClInclude>
     <ClInclude Include="renderer.h">
