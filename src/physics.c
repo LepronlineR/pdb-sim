@@ -107,6 +107,8 @@ typedef struct physics_t {
 	int* grid_start;
 	int* grid_entries;
 	int* grid_cell;
+	/* Particles near another soft body; the only ones placed in the grid. */
+	int* grid_candidates;
 	int substeps;
 	int solver_iterations;
 	float gravity;
@@ -486,10 +488,51 @@ static void physicsDetectContacts(physics_t* physics, float delta_seconds) {
 	const float cell_size = 2.0f * physics->max_radius + margin;
 	const float inverse_cell_size = 1.0f / cell_size;
 
+	/* Broad phase per soft body: a particle can only touch a particle of another
+	   body if it lies within that body's bounds grown by the largest reach, so only
+	   those particles enter the grid. Particles without an owner share one extra
+	   group, and always enter. */
+	const int group_count = physics->volume_constraint_count + 1;
+	const int loose_group = physics->volume_constraint_count;
+	vec3f_t group_min[PHYSICS_MAX_VOLUME_CONSTRAINTS + 1];
+	vec3f_t group_max[PHYSICS_MAX_VOLUME_CONSTRAINTS + 1];
+	for (int g = 0; g < group_count; ++g) {
+		group_min[g] = (vec3f_t){ FLT_MAX, FLT_MAX, FLT_MAX };
+		group_max[g] = (vec3f_t){ -FLT_MAX, -FLT_MAX, -FLT_MAX };
+	}
+	for (int i = 0; i < count; ++i) {
+		const int owner = physics->particle_owner[i];
+		const int g = owner >= 0 ? owner : loose_group;
+		group_min[g] = vec3fMin(group_min[g], positions[i]);
+		group_max[g] = vec3fMax(group_max[g], positions[i]);
+	}
+	const float reach_max = 2.0f * physics->max_radius + margin;
+	for (int g = 0; g < group_count; ++g) {
+		const vec3f_t grow = { reach_max, reach_max, reach_max };
+		group_min[g] = vec3fSub(group_min[g], grow);
+		group_max[g] = vec3fAdd(group_max[g], grow);
+	}
+
+	int* candidates = physics->grid_candidates;
+	int candidate_count = 0;
+	for (int i = 0; i < count; ++i) {
+		const int owner = physics->particle_owner[i];
+		bool candidate = owner < 0;
+		for (int g = 0; g < group_count && !candidate; ++g) {
+			if (g == owner) continue;
+			const vec3f_t p = positions[i];
+			candidate = p.x >= group_min[g].x && p.x <= group_max[g].x &&
+				p.y >= group_min[g].y && p.y <= group_max[g].y &&
+				p.z >= group_min[g].z && p.z <= group_max[g].z;
+		}
+		if (candidate) candidates[candidate_count++] = i;
+	}
+
 	int* start = physics->grid_start;
 	int* cell = physics->grid_cell;
 	memset(start, 0, sizeof(int) * (PHYSICS_GRID_TABLE_SIZE + 1));
-	for (int i = 0; i < count; ++i) {
+	for (int c = 0; c < candidate_count; ++c) {
+		const int i = candidates[c];
 		cell[i * 3] = (int)floorf(positions[i].x * inverse_cell_size);
 		cell[i * 3 + 1] = (int)floorf(positions[i].y * inverse_cell_size);
 		cell[i * 3 + 2] = (int)floorf(positions[i].z * inverse_cell_size);
@@ -501,22 +544,36 @@ static void physicsDetectContacts(physics_t* physics, float delta_seconds) {
 		start[h] = running;
 	}
 	start[PHYSICS_GRID_TABLE_SIZE] = running;
-	for (int i = 0; i < count; ++i) {
+	for (int c = 0; c < candidate_count; ++c) {
+		const int i = candidates[c];
 		const uint32_t hash = physicsGridHash(cell[i * 3], cell[i * 3 + 1], cell[i * 3 + 2]);
 		physics->grid_entries[--start[hash]] = i;
 	}
 
-	for (int i = 0; i < count; ++i) {
+	/* Half-shell search: a particle's own cell plus the 13 neighbours "ahead" of
+	   it. Two particles in different cells see each other from exactly one side,
+	   so every pair is found once. */
+	static const int forward[14][3] = {
+		{ 0, 0, 0 },
+		{ 1, 0, 0 },
+		{ -1, 1, 0 }, { 0, 1, 0 }, { 1, 1, 0 },
+		{ -1, -1, 1 }, { 0, -1, 1 }, { 1, -1, 1 },
+		{ -1, 0, 1 }, { 0, 0, 1 }, { 1, 0, 1 },
+		{ -1, 1, 1 }, { 0, 1, 1 }, { 1, 1, 1 }
+	};
+	for (int c = 0; c < candidate_count; ++c) {
+		const int i = candidates[c];
 		const int owner = physics->particle_owner[i];
-		for (int z = cell[i * 3 + 2] - 1; z <= cell[i * 3 + 2] + 1; ++z) {
-		for (int y = cell[i * 3 + 1] - 1; y <= cell[i * 3 + 1] + 1; ++y) {
-		for (int x = cell[i * 3] - 1; x <= cell[i * 3] + 1; ++x) {
+		for (int n = 0; n < 14; ++n) {
+			const int x = cell[i * 3] + forward[n][0];
+			const int y = cell[i * 3 + 1] + forward[n][1];
+			const int z = cell[i * 3 + 2] + forward[n][2];
 			const uint32_t hash = physicsGridHash(x, y, z);
 			for (int k = start[hash]; k < start[hash + 1]; ++k) {
 				const int j = physics->grid_entries[k];
-				/* j > i visits each pair once; the cell check drops entries that
-				   only share the bucket, which would otherwise be found twice. */
-				if (j <= i || cell[j * 3] != x || cell[j * 3 + 1] != y ||
+				/* In the own cell, j > i keeps each pair once. The cell check drops
+				   entries that only share the bucket. */
+				if ((n == 0 && j <= i) || cell[j * 3] != x || cell[j * 3 + 1] != y ||
 					cell[j * 3 + 2] != z) continue;
 				if (owner >= 0 && owner == physics->particle_owner[j]) continue;
 				if (inverse_masses[i] + inverse_masses[j] == 0.0f) continue;
@@ -525,8 +582,6 @@ static void physicsDetectContacts(physics_t* physics, float delta_seconds) {
 					physicsAddContact(physics, i, j);
 				}
 			}
-		}
-		}
 		}
 	}
 }
@@ -760,6 +815,7 @@ physics_t* physicsCreate(heap_t* heap) {
 		_Alignof(int));
 	phys->grid_entries = heapAlloc(heap, sizeof(int) * PHYSICS_MAX_PARTICLES, _Alignof(int));
 	phys->grid_cell = heapAlloc(heap, sizeof(int) * 3 * PHYSICS_MAX_PARTICLES, _Alignof(int));
+	phys->grid_candidates = heapAlloc(heap, sizeof(int) * PHYSICS_MAX_PARTICLES, _Alignof(int));
 	for (int i = 0; i < PHYSICS_MAX_VOLUME_CONSTRAINTS + 2; ++i) {
 		phys->distance_island_offsets[i] = 0;
 	}
@@ -821,6 +877,7 @@ void physicsDestroy(physics_t* physics) {
 			heapFree(physics->heap, physics->volume_constraints[i].indices);
 			heapFree(physics->heap, physics->volume_constraints[i].gradients);
 		}
+		heapFree(physics->heap, physics->grid_candidates);
 		heapFree(physics->heap, physics->grid_cell);
 		heapFree(physics->heap, physics->grid_entries);
 		heapFree(physics->heap, physics->grid_start);
