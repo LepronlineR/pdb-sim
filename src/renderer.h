@@ -24,6 +24,11 @@ void rendererDestroy(renderer_t* render);
 // Add a model to the renderer queue
 void rendererModelAdd(renderer_t* render, ecs_entity_t* entity, gpu_mesh_info_t* mesh, gpu_shader_info_t* shader, gpu_uniform_buffer_info_t* uniform);
 
+// Blocks until the render thread has finished every queued frame, so scene-owned
+// mesh data can be freed safely.
+//
+void rendererWaitIdle(renderer_t* render);
+
 // Finished rendering the frame
 void rendererFrameDone(renderer_t* render);
 int rendererThreadFunc(void* user_data);

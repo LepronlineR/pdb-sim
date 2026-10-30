@@ -74,6 +74,15 @@ uint32_t wmGetKeyMask(wm_window_t* window);
 //
 void wmGetMouseLoc(wm_window_t* window, int* x, int* y);
 
+// Gets the cursor position in client pixels (origin top-left) and the client size
+//
+// RETURN: false if the window has no client area
+bool wmGetCursorClientPos(wm_window_t* window, int* x, int* y, int* width, int* height);
+
+// Mouse wheel movement since the last pump, in WHEEL_DELTA (120) units per notch
+//
+int wmGetMouseWheel(wm_window_t* window);
+
 // Get the raw OS window object (HWND)
 //
 // RETURN: window object

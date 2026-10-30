@@ -44,6 +44,8 @@ typedef struct gpu_mesh_t {
 	VkDeviceMemory vtx_mem;
 	int vtx_count;
 	size_t vtx_data_size;
+	/* Dynamic meshes stay mapped for their lifetime (the memory is coherent). */
+	void* vtx_mapped;
 } gpu_mesh_t;
 
 typedef struct gpu_frame_t {
@@ -988,6 +990,11 @@ void gpuDestroyUniformBuffer(gpu_t* gpu, gpu_uniform_buffer_t* ub) {
 //								      MESH
 // 
 
+uint64_t gpuMeshInfoNextId(void) {
+	static uint64_t next_id;
+	return ++next_id;
+}
+
 gpu_mesh_t* gpuCreateMesh(gpu_t* gpu, gpu_mesh_info_t* mesh_info) {
 	gpu_mesh_t* mesh = heapAlloc(gpu->heap, sizeof(gpu_mesh_t), 8);
 	memset(mesh, 0, sizeof(*mesh));
@@ -1029,7 +1036,12 @@ gpu_mesh_t* gpuCreateMesh(gpu_t* gpu, gpu_mesh_info_t* mesh_info) {
 		return gpuError(gpu, "vkMapMemory", "Unable to map memory");
 	}
 	memcpy(mem_dest, mesh_info->vtx_data, mesh_info->vtx_data_size);
-	vkUnmapMemory(gpu->logic_dev, mesh->vtx_mem);
+	if (mesh_info->dynamic) {
+		mesh->vtx_mapped = mem_dest;
+	}
+	else {
+		vkUnmapMemory(gpu->logic_dev, mesh->vtx_mem);
+	}
 
 	vk_result = vkBindBufferMemory(gpu->logic_dev, mesh->vtx_buff, mesh->vtx_mem, 0);
 	if (vk_result) {
@@ -1082,6 +1094,12 @@ void gpuUpdateMeshVertices(gpu_t* gpu, gpu_mesh_t* mesh, const void* data, size_
 	if (!mesh || !data || size > mesh->vtx_data_size) {
 		return;
 	}
+	/* The renderer waits for the previous frame's fence before recording, so the
+	   GPU is no longer reading this buffer. */
+	if (mesh->vtx_mapped) {
+		memcpy(mesh->vtx_mapped, data, size);
+		return;
+	}
 	void* destination = NULL;
 	if (vkMapMemory(gpu->logic_dev, mesh->vtx_mem, 0, size, 0, &destination) == VK_SUCCESS) {
 		memcpy(destination, data, size);
@@ -1098,8 +1116,11 @@ void gpuDestroyMesh(gpu_t* gpu, gpu_mesh_t* mesh) {
 
 		if (mesh->idx_mem)
 			vkFreeMemory(gpu->logic_dev, mesh->idx_mem, NULL);
-		if (mesh->vtx_mem)
+		if (mesh->vtx_mem) {
+			if (mesh->vtx_mapped)
+				vkUnmapMemory(gpu->logic_dev, mesh->vtx_mem);
 			vkFreeMemory(gpu->logic_dev, mesh->vtx_mem, NULL);
+		}
 
 		heapFree(gpu->heap, mesh);
 	}

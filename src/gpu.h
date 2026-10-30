@@ -61,6 +61,9 @@ typedef struct gpu_uniform_buffer_info_t {
 typedef struct gpu_mesh_info_t {
 	gpu_mesh_layout_t layout;
 	bool dynamic;
+	// Identifies the mesh to the renderer beyond its address, which can be reused
+	// after a mesh is freed. 0 for static meshes that live for the whole run.
+	uint64_t id;
 	void* vtx_data;
 	void* idx_data;
 	size_t vtx_data_size;
@@ -96,6 +99,8 @@ gpu_uniform_buffer_t* gpuCreateUniformBuffer(gpu_t* gpu, const gpu_uniform_buffe
 void gpuUpdateUniformBuffer(gpu_t* gpu, gpu_uniform_buffer_t* ub, const void* data, size_t size);
 void gpuDestroyUniformBuffer(gpu_t* gpu, gpu_uniform_buffer_t* ub);
 
+// Returns a new non-zero id for gpu_mesh_info_t.id. Call from one thread only.
+uint64_t gpuMeshInfoNextId(void);
 gpu_mesh_t* gpuCreateMesh(gpu_t* gpu, gpu_mesh_info_t* mesh_info);
 void gpuUpdateMeshVertices(gpu_t* gpu, gpu_mesh_t* mesh, const void* data, size_t size);
 void gpuDestroyMesh(gpu_t* gpu, gpu_mesh_t* mesh);

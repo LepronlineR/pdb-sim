@@ -143,6 +143,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="ball.c" />
+    <ClCompile Include="cloth.c" />
     <ClCompile Include="..\lib\lz4\lz4.c" />
     <ClCompile Include="..\lib\tlsf\tlsf.c" />
     <ClCompile Include="atomic.c" />
@@ -201,6 +202,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="ball.h" />
+    <ClInclude Include="cloth.h" />
     <ClInclude Include="..\lib\lz4\lz4.h" />
     <ClInclude Include="..\lib\tlsf\tlsf.h" />
     <ClInclude Include="atomic.h" />

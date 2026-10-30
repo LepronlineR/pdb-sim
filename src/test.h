@@ -27,4 +27,9 @@ int mutexTestFunc(void* user);
 void runThreadBenchmark(int (*function)(void*), const char* name);
 void testThreading();
 
+// Runs the physics regression tests headless.
+//
+// RETURN: the number of failed tests
+int testPhysics(heap_t* heap);
+
 #endif

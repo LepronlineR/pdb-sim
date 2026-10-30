@@ -25,6 +25,10 @@ typedef struct command_model_t {
 	command_type_t type;
 	ecs_entity_t entity;
 	gpu_mesh_info_t* mesh;
+	/* Copied on the scene thread: the render thread must not read *mesh, which
+	   may already be freed (e.g. after a scene reset). */
+	uint64_t mesh_id;
+	gpu_mesh_layout_t mesh_layout;
 	gpu_shader_info_t* shader;
 	gpu_uniform_buffer_info_t uniform_buffer;
 	void* dynamic_vtx_data;
@@ -44,6 +48,7 @@ typedef struct draw_instance_t {
 
 typedef struct draw_mesh_t {
 	gpu_mesh_info_t* info;
+	uint64_t info_id;
 	gpu_mesh_t* mesh;
 	int frame_counter;
 } draw_mesh_t;
@@ -98,6 +103,8 @@ void rendererModelAdd(renderer_t* render, ecs_entity_t* entity, gpu_mesh_info_t*
 	command->type = RENDERER_COMMAND_DRAW_MODEL;
 	command->entity = *entity;
 	command->mesh = mesh;
+	command->mesh_id = mesh->id;
+	command->mesh_layout = mesh->layout;
 	command->shader = shader;
 	command->uniform_buffer.size = uniform->size;
 	command->uniform_buffer.data = heapAlloc(render->heap, uniform->size, 8);
@@ -110,6 +117,13 @@ void rendererModelAdd(renderer_t* render, ecs_entity_t* entity, gpu_mesh_info_t*
 		memcpy(command->dynamic_vtx_data, mesh->vtx_data, mesh->vtx_data_size);
 	}
 	dequePushBack(render->queue, command);
+}
+
+void rendererWaitIdle(renderer_t* render) {
+	/* The slot is free only once the render thread has finished the queued frame,
+	   so after this no queued command refers to scene-owned data. */
+	semaphoreGet(render->frame_slot);
+	semaphoreRelease(render->frame_slot);
 }
 
 void rendererFrameDone(renderer_t* render) {
@@ -211,6 +225,9 @@ draw_shader_t* rendererShaderModelCommand(renderer_t* render, command_model_t* c
 		assert(render->shader_count < _countof(render->shaders));
 		shader = &render->shaders[render->shader_count++];
 		shader->info = command->shader;
+		/* The slot may hold pointers from a shader destroyed as stale. */
+		shader->shader = NULL;
+		shader->pipeline = NULL;
 	}
 
 	if (shader->shader == NULL) {
@@ -220,7 +237,7 @@ draw_shader_t* rendererShaderModelCommand(renderer_t* render, command_model_t* c
 	if (shader->pipeline == NULL) {
 		gpu_pipeline_info_t pipeline_info = {
 			.shader = shader->shader,
-			.mesh_layout = command->mesh->layout
+			.mesh_layout = command->mesh_layout
 		};
 		shader->pipeline = gpuCreatePipeline(render->gpu, &pipeline_info);
 	}
@@ -231,7 +248,8 @@ draw_shader_t* rendererShaderModelCommand(renderer_t* render, command_model_t* c
 draw_mesh_t* rendererMeshModelCommand(renderer_t* render, command_model_t* command) {
 	draw_mesh_t* mesh = NULL;
 	for (int x = 0; x < render->mesh_count; x++) {
-		if (render->meshes[x].info == command->mesh) { // found mesh
+		if (render->meshes[x].info == command->mesh &&
+			render->meshes[x].info_id == command->mesh_id) { // found mesh
 			mesh = &render->meshes[x];
 			break;
 		}
@@ -241,6 +259,8 @@ draw_mesh_t* rendererMeshModelCommand(renderer_t* render, command_model_t* comma
 		assert(render->mesh_count < _countof(render->meshes));
 		mesh = &render->meshes[render->mesh_count++];
 		mesh->info = command->mesh;
+		mesh->info_id = command->mesh_id;
+		mesh->mesh = NULL;
 	}
 
 	if (mesh->mesh == NULL) {
