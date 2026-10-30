@@ -1,5 +1,8 @@
 #include "physics.h"
 #include "heap.h"
+#include "semaphore.h"
+#include "thread.h"
+#include "atomic.h"
 
 #include <assert.h>
 #include <float.h>
@@ -11,8 +14,18 @@ enum {
 	PHYSICS_MAX_VOLUME_CONSTRAINTS = 16,
 	PHYSICS_MAX_VOLUME_INDICES = 1536,
 	PHYSICS_CONTACT_HASH_SIZE = 1024,
-	PHYSICS_CONTACT_ITERATIONS = 2
+	PHYSICS_CONTACT_ITERATIONS = 2,
+	PHYSICS_MAX_WORKERS = 8,
+	PHYSICS_MIN_BODY_WORK_PER_THREAD = 1024
 };
+
+typedef void (*physics_parallel_func_t)(physics_t* physics, int start, int end,
+	float delta_seconds, float inverse_dt_squared);
+
+typedef struct physics_worker_t {
+	physics_t* physics;
+	int index;
+} physics_worker_t;
 
 struct physics_distance_constraint_t {
 	physics_body_t* body_a;
@@ -54,11 +67,327 @@ typedef struct physics_t {
 	int* contact_cell_x;
 	int* contact_cell_y;
 	int* contact_cell_z;
+	/* Index of the volume constraint that first claimed each body, or -1. */
+	int* body_owner;
+	/* Distance constraint indices grouped by owning soft body. Group i lives in
+	   [offsets[i], offsets[i + 1]); the last group holds constraints that span
+	   soft bodies or belong to none, and is solved serially. */
+	int* distance_island_constraints;
+	int distance_island_offsets[PHYSICS_MAX_VOLUME_CONSTRAINTS + 2];
+	bool distance_islands_dirty;
+	bool volume_bodies_shared;
 	int solver_iterations;
 	float gravity;
 	float ground_height;
 	float ground_compliance;
+	int worker_count;
+	int parallel_worker_count;
+	int parallel_next_chunk;
+	int parallel_count;
+	float parallel_delta_seconds;
+	float parallel_inverse_dt_squared;
+	physics_parallel_func_t parallel_func;
+	bool worker_shutdown;
+	semaphore_t* worker_start;
+	semaphore_t* worker_done;
+	thread_t* worker_threads[PHYSICS_MAX_WORKERS - 1];
+	physics_worker_t workers[PHYSICS_MAX_WORKERS];
 } physics_t;
+
+static int physicsWorkerFunc(void* user);
+static void physicsDestroyWorkers(physics_t* physics);
+static void physicsParallelFor(physics_t* physics, int count, int min_items_per_thread,
+	physics_parallel_func_t func, float delta_seconds, float inverse_dt_squared);
+static void physicsRunParallelChunk(physics_t* physics);
+static void physicsPredictBodiesRange(physics_t* physics, int start, int end,
+	float delta_seconds, float inverse_dt_squared);
+static void physicsResetDistanceLambdasRange(physics_t* physics, int start, int end,
+	float delta_seconds, float inverse_dt_squared);
+static void physicsResetVolumeLambdasRange(physics_t* physics, int start, int end,
+	float delta_seconds, float inverse_dt_squared);
+static void physicsSolveIslandsRange(physics_t* physics, int start, int end,
+	float delta_seconds, float inverse_dt_squared);
+static void physicsSolveGroundConstraintsRange(physics_t* physics, int start, int end,
+	float delta_seconds, float inverse_dt_squared);
+static void physicsReconstructVelocitiesRange(physics_t* physics, int start, int end,
+	float delta_seconds, float inverse_dt_squared);
+static void physicsUpdateSoftBodyBoundsRange(physics_t* physics, int start, int end,
+	float delta_seconds, float inverse_dt_squared);
+static void physicsDampenDeformationRange(physics_t* physics, int start, int end,
+	float delta_seconds, float inverse_dt_squared);
+static void physicsBuildDistanceIslands(physics_t* physics);
+static void physicsSolveDistanceIsland(physics_t* physics, int island,
+	float inverse_dt_squared);
+static float physicsBodyContactRadius(const physics_body_t* body);
+static bool physicsSphereNearBox(vec3f_t center, float radius, vec3f_t box_min,
+	vec3f_t box_max);
+
+static int physicsWorkerFunc(void* user) {
+	physics_worker_t* worker = (physics_worker_t*)user;
+	physics_t* physics = worker->physics;
+	for (;;) {
+		semaphoreGet(physics->worker_start);
+		if (physics->worker_shutdown) {
+			break;
+		}
+		physicsRunParallelChunk(physics);
+		semaphoreRelease(physics->worker_done);
+	}
+	return 0;
+}
+
+static void physicsDestroyWorkers(physics_t* physics) {
+	if (physics->worker_start) {
+		physics->worker_shutdown = true;
+		for (int i = 1; i < physics->worker_count; ++i) {
+			if (physics->worker_threads[i - 1]) {
+				semaphoreRelease(physics->worker_start);
+			}
+		}
+		for (int i = 1; i < physics->worker_count; ++i) {
+			if (physics->worker_threads[i - 1]) {
+				threadRun(physics->worker_threads[i - 1]);
+				physics->worker_threads[i - 1] = NULL;
+			}
+		}
+	}
+	if (physics->worker_done) {
+		semaphoreDestroy(physics->worker_done);
+		physics->worker_done = NULL;
+	}
+	if (physics->worker_start) {
+		semaphoreDestroy(physics->worker_start);
+		physics->worker_start = NULL;
+	}
+	physics->worker_count = 1;
+	physics->parallel_worker_count = 1;
+	physics->worker_shutdown = false;
+}
+
+static void physicsParallelFor(physics_t* physics, int count, int min_items_per_thread,
+	physics_parallel_func_t func, float delta_seconds, float inverse_dt_squared) {
+	if (count <= 0) {
+		return;
+	}
+	if (min_items_per_thread < 1) {
+		min_items_per_thread = 1;
+	}
+	int worker_count = __min(physics->worker_count,
+		(count + min_items_per_thread - 1) / min_items_per_thread);
+	worker_count = __max(1, worker_count);
+	if (worker_count <= 1 || physics->worker_start == NULL || physics->worker_done == NULL) {
+		func(physics, 0, count, delta_seconds, inverse_dt_squared);
+		return;
+	}
+
+	physics->parallel_func = func;
+	physics->parallel_count = count;
+	physics->parallel_delta_seconds = delta_seconds;
+	physics->parallel_inverse_dt_squared = inverse_dt_squared;
+	physics->parallel_worker_count = worker_count;
+	physics->parallel_next_chunk = 0;
+
+	for (int i = 1; i < worker_count; ++i) {
+		semaphoreRelease(physics->worker_start);
+	}
+	physicsRunParallelChunk(physics);
+	for (int i = 1; i < worker_count; ++i) {
+		semaphoreGet(physics->worker_done);
+	}
+
+	physics->parallel_func = NULL;
+	physics->parallel_count = 0;
+	physics->parallel_worker_count = 1;
+}
+
+/* Chunks are claimed rather than tied to a worker index: a fast worker can take
+   two start tokens in one dispatch, which would otherwise run its chunk twice and
+   skip another. */
+static void physicsRunParallelChunk(physics_t* physics) {
+	const int worker_index = atomicInc(&physics->parallel_next_chunk);
+	const int start = (physics->parallel_count * worker_index) /
+		physics->parallel_worker_count;
+	const int end = (physics->parallel_count * (worker_index + 1)) /
+		physics->parallel_worker_count;
+	physics->parallel_func(physics, start, end, physics->parallel_delta_seconds,
+		physics->parallel_inverse_dt_squared);
+}
+
+static void physicsPredictBodiesRange(physics_t* physics, int start, int end,
+	float delta_seconds, float inverse_dt_squared) {
+	(void)inverse_dt_squared;
+	for (int i = start; i < end; ++i) {
+		physics_body_t* body = &physics->bodies[i];
+		if (body->inverse_mass == 0.0f) {
+			body->previous_position = body->position;
+			continue;
+		}
+		body->previous_position = body->position;
+		body->velocity.y += physics->gravity * delta_seconds;
+		body->position = vec3fAdd(body->position, vec3fScale(body->velocity, delta_seconds));
+		body->contact_lambda = 0.0f;
+		body->grounded = false;
+	}
+}
+
+static void physicsResetDistanceLambdasRange(physics_t* physics, int start, int end,
+	float delta_seconds, float inverse_dt_squared) {
+	(void)delta_seconds;
+	(void)inverse_dt_squared;
+	for (int i = start; i < end; ++i) {
+		physics->distance_constraints[i].lambda = 0.0f;
+	}
+}
+
+static void physicsResetVolumeLambdasRange(physics_t* physics, int start, int end,
+	float delta_seconds, float inverse_dt_squared) {
+	(void)delta_seconds;
+	(void)inverse_dt_squared;
+	for (int i = start; i < end; ++i) {
+		physics->volume_constraints[i].lambda = 0.0f;
+	}
+}
+
+/* Each island is one soft body: its own distance constraints followed by its
+   volume constraint. Islands touch disjoint bodies, so they run in parallel. */
+static void physicsSolveIslandsRange(physics_t* physics, int start, int end,
+	float delta_seconds, float inverse_dt_squared) {
+	(void)delta_seconds;
+	for (int i = start; i < end; ++i) {
+		physicsSolveDistanceIsland(physics, i, inverse_dt_squared);
+		physicsSolveVolumeConstraint(&physics->volume_constraints[i], inverse_dt_squared);
+	}
+}
+
+static void physicsSolveDistanceIsland(physics_t* physics, int island,
+	float inverse_dt_squared) {
+	const int begin = physics->distance_island_offsets[island];
+	const int end = physics->distance_island_offsets[island + 1];
+	for (int i = begin; i < end; ++i) {
+		physicsSolveDistanceConstraint(
+			&physics->distance_constraints[physics->distance_island_constraints[i]],
+			inverse_dt_squared);
+	}
+}
+
+static void physicsSolveGroundConstraintsRange(physics_t* physics, int start, int end,
+	float delta_seconds, float inverse_dt_squared) {
+	(void)delta_seconds;
+	for (int i = start; i < end; ++i) {
+		physicsSolveGroundConstraint(physics, &physics->bodies[i], inverse_dt_squared);
+	}
+}
+
+static void physicsReconstructVelocitiesRange(physics_t* physics, int start, int end,
+	float delta_seconds, float inverse_dt_squared) {
+	(void)inverse_dt_squared;
+	for (int i = start; i < end; ++i) {
+		physics_body_t* body = &physics->bodies[i];
+		if (body->inverse_mass == 0.0f) {
+			continue;
+		}
+		body->velocity = vec3fScale(vec3fSub(body->position, body->previous_position),
+			1.0f / delta_seconds);
+		if (body->grounded) {
+			body->velocity.x *= 0.98f;
+			body->velocity.z *= 0.98f;
+		}
+	}
+}
+
+static void physicsUpdateSoftBodyBoundsRange(physics_t* physics, int start, int end,
+	float delta_seconds, float inverse_dt_squared) {
+	(void)delta_seconds;
+	(void)inverse_dt_squared;
+	for (int group = start; group < end; ++group) {
+		physics_volume_constraint_t* soft_body = &physics->volume_constraints[group];
+		soft_body->bounds_min = (vec3f_t){ FLT_MAX, FLT_MAX, FLT_MAX };
+		soft_body->bounds_max = (vec3f_t){ -FLT_MAX, -FLT_MAX, -FLT_MAX };
+		soft_body->center = vec3fZero();
+		for (int i = 0; i < soft_body->body_count; ++i) {
+			physics_body_t* body = soft_body->bodies[i];
+			vec3f_t radius = {
+				body->collision_radius, body->collision_radius, body->collision_radius
+			};
+			soft_body->bounds_min = vec3fMin(soft_body->bounds_min,
+				vec3fSub(body->position, radius));
+			soft_body->bounds_max = vec3fMax(soft_body->bounds_max,
+				vec3fAdd(body->position, radius));
+			soft_body->center = vec3fAdd(soft_body->center, body->position);
+		}
+		soft_body->center = vec3fScale(soft_body->center,
+			1.0f / (float)soft_body->body_count);
+	}
+}
+
+static void physicsDampenDeformationRange(physics_t* physics, int start, int end,
+	float delta_seconds, float inverse_dt_squared) {
+	(void)delta_seconds;
+	(void)inverse_dt_squared;
+	for (int constraint_idx = start; constraint_idx < end; ++constraint_idx) {
+		physics_volume_constraint_t* constraint = &physics->volume_constraints[constraint_idx];
+		float total_mass = 0.0f;
+		vec3f_t center_velocity = vec3fZero();
+		for (int i = 0; i < constraint->body_count; ++i) {
+			physics_body_t* body = constraint->bodies[i];
+			if (body->inverse_mass <= 0.0f) continue;
+			float mass = 1.0f / body->inverse_mass;
+			total_mass += mass;
+			center_velocity = vec3fAdd(center_velocity, vec3fScale(body->velocity, mass));
+		}
+		if (total_mass <= 0.0f) continue;
+		center_velocity = vec3fScale(center_velocity, 1.0f / total_mass);
+		for (int i = 0; i < constraint->body_count; ++i) {
+			physics_body_t* body = constraint->bodies[i];
+			vec3f_t relative = vec3fSub(body->velocity, center_velocity);
+			body->velocity = vec3fAdd(center_velocity,
+				vec3fScale(relative, constraint->velocity_retention));
+		}
+	}
+}
+
+/* Stable counting sort of distance constraints by owning soft body, so each
+   island keeps the original Gauss-Seidel order. Rebuilt only after constraints
+   are added. */
+static void physicsBuildDistanceIslands(physics_t* physics) {
+	const int island_count = physics->volume_constraint_count;
+	const int loose = island_count;
+	int* offsets = physics->distance_island_offsets;
+	for (int i = 0; i <= island_count + 1; ++i) offsets[i] = 0;
+
+	for (int i = 0; i < physics->distance_constraint_count; ++i) {
+		physics_distance_constraint_t* constraint = &physics->distance_constraints[i];
+		const int owner_a = physics->body_owner[constraint->body_a - physics->bodies];
+		const int owner_b = physics->body_owner[constraint->body_b - physics->bodies];
+		const int island = (owner_a >= 0 && owner_a == owner_b && !physics->volume_bodies_shared) ?
+			owner_a : loose;
+		offsets[island + 1]++;
+	}
+	for (int i = 0; i <= island_count; ++i) offsets[i + 1] += offsets[i];
+
+	int cursor[PHYSICS_MAX_VOLUME_CONSTRAINTS + 1];
+	for (int i = 0; i <= island_count; ++i) cursor[i] = offsets[i];
+	for (int i = 0; i < physics->distance_constraint_count; ++i) {
+		physics_distance_constraint_t* constraint = &physics->distance_constraints[i];
+		const int owner_a = physics->body_owner[constraint->body_a - physics->bodies];
+		const int owner_b = physics->body_owner[constraint->body_b - physics->bodies];
+		const int island = (owner_a >= 0 && owner_a == owner_b && !physics->volume_bodies_shared) ?
+			owner_a : loose;
+		physics->distance_island_constraints[cursor[island]++] = i;
+	}
+	physics->distance_islands_dirty = false;
+}
+
+static float physicsBodyContactRadius(const physics_body_t* body) {
+	return body->collision_radius > 0.0f ? body->collision_radius : body->half_extents.y;
+}
+
+static bool physicsSphereNearBox(vec3f_t center, float radius, vec3f_t box_min,
+	vec3f_t box_max) {
+	return center.x + radius >= box_min.x && center.x - radius <= box_max.x &&
+		center.y + radius >= box_min.y && center.y - radius <= box_max.y &&
+		center.z + radius >= box_min.z && center.z - radius <= box_max.z;
+}
 
 uint32_t physicsContactHash(int x, int y, int z) {
 	uint32_t hash = (uint32_t)x * 73856093u;
@@ -91,6 +420,14 @@ physics_t* physicsCreate(heap_t* heap) {
 		_Alignof(int));
 	phys->contact_cell_z = heapAlloc(heap, sizeof(int) * PHYSICS_MAX_BODIES,
 		_Alignof(int));
+	phys->body_owner = heapAlloc(heap, sizeof(int) * PHYSICS_MAX_BODIES, _Alignof(int));
+	phys->distance_island_constraints = heapAlloc(heap,
+		sizeof(int) * PHYSICS_MAX_DISTANCE_CONSTRAINTS, _Alignof(int));
+	for (int i = 0; i < PHYSICS_MAX_VOLUME_CONSTRAINTS + 2; ++i) {
+		phys->distance_island_offsets[i] = 0;
+	}
+	phys->distance_islands_dirty = false;
+	phys->volume_bodies_shared = false;
 	phys->body_count = 0;
 	phys->distance_constraint_count = 0;
 	phys->volume_constraint_count = 0;
@@ -102,17 +439,51 @@ physics_t* physicsCreate(heap_t* heap) {
 	phys->ground_height = 0.0f;
 	phys->ground_compliance = 0.0f;
 	phys->solver_iterations = 8;
+	phys->parallel_worker_count = 1;
+	phys->parallel_count = 0;
+	phys->parallel_next_chunk = 0;
+	phys->parallel_delta_seconds = 0.0f;
+	phys->parallel_inverse_dt_squared = 0.0f;
+	phys->parallel_func = NULL;
+	phys->worker_shutdown = false;
+	phys->worker_start = NULL;
+	phys->worker_done = NULL;
+	for (int i = 0; i < PHYSICS_MAX_WORKERS - 1; ++i) {
+		phys->worker_threads[i] = NULL;
+	}
+	for (int i = 0; i < PHYSICS_MAX_WORKERS; ++i) {
+		phys->workers[i].physics = phys;
+		phys->workers[i].index = i;
+	}
+	/* Leave cores for the render and file threads; worker 0 is the caller. */
+	phys->worker_count = __max(1, __min(threadGetProcessorCount() - 2, PHYSICS_MAX_WORKERS));
+	if (phys->worker_count > 1) {
+		phys->worker_start = semaphoreCreate(0, PHYSICS_MAX_WORKERS);
+		phys->worker_done = semaphoreCreate(0, PHYSICS_MAX_WORKERS);
+		bool worker_failed = phys->worker_start == NULL || phys->worker_done == NULL;
+		for (int i = 1; i < phys->worker_count && !worker_failed; ++i) {
+			phys->worker_threads[i - 1] = threadCreate(physicsWorkerFunc, &phys->workers[i]);
+			worker_failed = phys->worker_threads[i - 1] == NULL;
+		}
+		if (worker_failed) {
+			physicsDestroyWorkers(phys);
+			phys->worker_count = 1;
+		}
+	}
 
 	return phys;
 }
 
 void physicsDestroy(physics_t* physics) {
 	if (physics) {
+		physicsDestroyWorkers(physics);
 		for (int i = 0; i < physics->volume_constraint_count; ++i) {
 			heapFree(physics->heap, physics->volume_constraints[i].indices);
 			heapFree(physics->heap, physics->volume_constraints[i].bodies);
 			heapFree(physics->heap, physics->volume_constraints[i].gradients);
 		}
+		heapFree(physics->heap, physics->distance_island_constraints);
+		heapFree(physics->heap, physics->body_owner);
 		heapFree(physics->heap, physics->contact_cell_z);
 		heapFree(physics->heap, physics->contact_cell_y);
 		heapFree(physics->heap, physics->contact_cell_x);
@@ -138,6 +509,7 @@ physics_body_t* physicsAddBox(physics_t* physics, vec3f_t position,
 	body->inverse_mass = mass > 0.0f ? 1.0f / mass : 0.0f;
 	body->contact_lambda = 0.0f;
 	body->grounded = false;
+	physics->body_owner[physics->body_count - 1] = -1;
 	(void)restitution;
 	return body;
 }
@@ -156,6 +528,7 @@ physics_distance_constraint_t* physicsAddDistanceConstraint(physics_t* physics,
 	constraint->rest_length = rest_length;
 	constraint->compliance = __max(0.0f, compliance);
 	constraint->lambda = 0.0f;
+	physics->distance_islands_dirty = true;
 	return constraint;
 }
 
@@ -193,6 +566,18 @@ physics_volume_constraint_t* physicsAddVolumeConstraint(physics_t* physics,
 	}
 	center = vec3fScale(center, 1.0f / (float)body_count);
 	constraint->center = center;
+
+	const int owner = physics->volume_constraint_count - 1;
+	for (int i = 0; i < body_count; ++i) {
+		int* body_owner = &physics->body_owner[bodies[i] - physics->bodies];
+		if (*body_owner >= 0 && *body_owner != owner) {
+			physics->volume_bodies_shared = true;
+		}
+		else {
+			*body_owner = owner;
+		}
+	}
+	physics->distance_islands_dirty = true;
 	return constraint;
 }
 
@@ -231,143 +616,48 @@ void physicsUpdate(physics_t* physics, float delta_seconds) {
 	}
 
 	/* XPBD prediction step (Algorithm 1 in the paper). */
-	for (int i = 0; i < physics->body_count; ++i) {
-		physics_body_t* body = &physics->bodies[i];
-		if (body->inverse_mass == 0.0f) {
-			body->previous_position = body->position;
-			continue;
-		}
-		body->previous_position = body->position;
-		body->velocity.y += physics->gravity * delta_seconds;
-		body->position = vec3fAdd(body->position, vec3fScale(body->velocity, delta_seconds));
-		body->contact_lambda = 0.0f;
-		body->grounded = false;
-	}
-
-	for (int i = 0; i < physics->distance_constraint_count; ++i) {
-		physics->distance_constraints[i].lambda = 0.0f;
-	}
-	for (int i = 0; i < physics->volume_constraint_count; ++i) {
-		physics->volume_constraints[i].lambda = 0.0f;
+	physicsParallelFor(physics, physics->body_count, PHYSICS_MIN_BODY_WORK_PER_THREAD,
+		physicsPredictBodiesRange, delta_seconds, 0.0f);
+	/* Per-soft-body loops below are too small to be worth waking workers for. */
+	physicsResetDistanceLambdasRange(physics, 0, physics->distance_constraint_count, 0.0f, 0.0f);
+	physicsResetVolumeLambdasRange(physics, 0, physics->volume_constraint_count, 0.0f, 0.0f);
+	if (physics->distance_islands_dirty) {
+		physicsBuildDistanceIslands(physics);
 	}
 
 	const float inverse_dt_squared = 1.0f / (delta_seconds * delta_seconds);
 	const int contact_start_iteration = __max(0,
 		physics->solver_iterations - PHYSICS_CONTACT_ITERATIONS);
+	const int island_count = physics->volume_constraint_count;
 	for (int iteration = 0; iteration < physics->solver_iterations; ++iteration) {
-		for (int i = 0; i < physics->distance_constraint_count; ++i) {
-			physicsSolveDistanceConstraint(&physics->distance_constraints[i], inverse_dt_squared);
+		/* Constraints that span soft bodies (the last island) go first, serially. */
+		physicsSolveDistanceIsland(physics, island_count, inverse_dt_squared);
+		if (physics->volume_bodies_shared) {
+			physicsSolveIslandsRange(physics, 0, island_count, 0.0f, inverse_dt_squared);
 		}
-		for (int i = 0; i < physics->volume_constraint_count; ++i) {
-			physicsSolveVolumeConstraint(&physics->volume_constraints[i], inverse_dt_squared);
+		else {
+			physicsParallelFor(physics, island_count, 1,
+				physicsSolveIslandsRange, 0.0f, inverse_dt_squared);
 		}
 		if (iteration >= contact_start_iteration) {
 			physicsUpdateSoftBodyBounds(physics);
 			physicsSolveSoftBodyContacts(physics);
 		}
-		for (int i = 0; i < physics->body_count; ++i) {
-			physicsSolveGroundConstraint(physics, &physics->bodies[i], inverse_dt_squared);
-		}
+		physicsParallelFor(physics, physics->body_count, PHYSICS_MIN_BODY_WORK_PER_THREAD,
+			physicsSolveGroundConstraintsRange, 0.0f, inverse_dt_squared);
 	}
 
 	/* Reconstruct velocities from the constrained positions. */
-	for (int i = 0; i < physics->body_count; ++i) {
-		physics_body_t* body = &physics->bodies[i];
-		if (body->inverse_mass == 0.0f) {
-			continue;
-		}
-		body->velocity = vec3fScale(vec3fSub(body->position, body->previous_position),
-			1.0f / delta_seconds);
-		if (body->grounded) {
-			body->velocity.x *= 0.98f;
-			body->velocity.z *= 0.98f;
-		}
-	}
-	physicsUpdateSoftBodyBounds(physics);
-	physicsDampSoftBodyContactVelocities(physics);
+	physicsParallelFor(physics, physics->body_count, PHYSICS_MIN_BODY_WORK_PER_THREAD,
+		physicsReconstructVelocitiesRange, delta_seconds, 0.0f);
 
 	/* Dampen deformation modes while preserving each soft body's center-of-mass
 	   velocity. Gravity therefore remains an unmodified 9.81 m/s^2. */
-	for (int constraint_idx = 0; constraint_idx < physics->volume_constraint_count; ++constraint_idx) {
-		physics_volume_constraint_t* constraint = &physics->volume_constraints[constraint_idx];
-		float total_mass = 0.0f;
-		vec3f_t center_velocity = vec3fZero();
-		for (int i = 0; i < constraint->body_count; ++i) {
-			physics_body_t* body = constraint->bodies[i];
-			if (body->inverse_mass <= 0.0f) continue;
-			float mass = 1.0f / body->inverse_mass;
-			total_mass += mass;
-			center_velocity = vec3fAdd(center_velocity, vec3fScale(body->velocity, mass));
-		}
-		if (total_mass <= 0.0f) continue;
-		center_velocity = vec3fScale(center_velocity, 1.0f / total_mass);
-		for (int i = 0; i < constraint->body_count; ++i) {
-			physics_body_t* body = constraint->bodies[i];
-			vec3f_t relative = vec3fSub(body->velocity, center_velocity);
-			body->velocity = vec3fAdd(center_velocity,
-				vec3fScale(relative, constraint->velocity_retention));
-		}
-	}
-}
-
-void physicsDampSoftBodyContactVelocities(physics_t* physics) {
-	for (int group_a = 0; group_a < physics->volume_constraint_count; ++group_a) {
-		physics_volume_constraint_t* soft_a = &physics->volume_constraints[group_a];
-		for (int group_b = group_a + 1; group_b < physics->volume_constraint_count; ++group_b) {
-			physics_volume_constraint_t* soft_b = &physics->volume_constraints[group_b];
-			if (!physicsSoftBodiesOverlap(soft_a, soft_b)) continue;
-			vec3f_t velocity_a = vec3fZero();
-			vec3f_t velocity_b = vec3fZero();
-			for (int i = 0; i < soft_a->body_count; ++i) {
-				physics_body_t* body = soft_a->bodies[i];
-				float mass = body->inverse_mass > 0.0f ? 1.0f / body->inverse_mass : 0.0f;
-				velocity_a = vec3fAdd(velocity_a, vec3fScale(body->velocity, mass));
-			}
-			for (int i = 0; i < soft_b->body_count; ++i) {
-				physics_body_t* body = soft_b->bodies[i];
-				float mass = body->inverse_mass > 0.0f ? 1.0f / body->inverse_mass : 0.0f;
-				velocity_b = vec3fAdd(velocity_b, vec3fScale(body->velocity, mass));
-			}
-			if (soft_a->total_mass <= 0.0f || soft_b->total_mass <= 0.0f) continue;
-			velocity_a = vec3fScale(velocity_a, 1.0f / soft_a->total_mass);
-			velocity_b = vec3fScale(velocity_b, 1.0f / soft_b->total_mass);
-			vec3f_t normal = vec3fNorm(vec3fSub(soft_a->center, soft_b->center));
-			if (vec3fMagnitudeSqrd(normal) <= 1.0e-8f) normal = vec3fY();
-			float approaching_speed = vec3fDot(vec3fSub(velocity_a, velocity_b), normal);
-			if (approaching_speed >= 0.0f) continue;
-			float inverse_mass_a = 1.0f / soft_a->total_mass;
-			float inverse_mass_b = 1.0f / soft_b->total_mass;
-			float impulse = -approaching_speed / (inverse_mass_a + inverse_mass_b);
-			vec3f_t change_a = vec3fScale(normal, impulse * inverse_mass_a);
-			vec3f_t change_b = vec3fScale(normal, impulse * inverse_mass_b);
-			for (int i = 0; i < soft_a->body_count; ++i)
-				soft_a->bodies[i]->velocity = vec3fAdd(soft_a->bodies[i]->velocity, change_a);
-			for (int i = 0; i < soft_b->body_count; ++i)
-				soft_b->bodies[i]->velocity = vec3fSub(soft_b->bodies[i]->velocity, change_b);
-		}
-	}
+	physicsDampenDeformationRange(physics, 0, physics->volume_constraint_count, 0.0f, 0.0f);
 }
 
 void physicsUpdateSoftBodyBounds(physics_t* physics) {
-	for (int group = 0; group < physics->volume_constraint_count; ++group) {
-		physics_volume_constraint_t* soft_body = &physics->volume_constraints[group];
-		soft_body->bounds_min = (vec3f_t){ FLT_MAX, FLT_MAX, FLT_MAX };
-		soft_body->bounds_max = (vec3f_t){ -FLT_MAX, -FLT_MAX, -FLT_MAX };
-		soft_body->center = vec3fZero();
-		for (int i = 0; i < soft_body->body_count; ++i) {
-			physics_body_t* body = soft_body->bodies[i];
-			vec3f_t radius = {
-				body->collision_radius, body->collision_radius, body->collision_radius
-			};
-			soft_body->bounds_min = vec3fMin(soft_body->bounds_min,
-				vec3fSub(body->position, radius));
-			soft_body->bounds_max = vec3fMax(soft_body->bounds_max,
-				vec3fAdd(body->position, radius));
-			soft_body->center = vec3fAdd(soft_body->center, body->position);
-		}
-		soft_body->center = vec3fScale(soft_body->center,
-			1.0f / (float)soft_body->body_count);
-	}
+	physicsUpdateSoftBodyBoundsRange(physics, 0, physics->volume_constraint_count, 0.0f, 0.0f);
 }
 
 bool physicsSoftBodiesOverlap(physics_volume_constraint_t* a,
@@ -387,9 +677,19 @@ void physicsSolveSoftBodyContacts(physics_t* physics) {
 				soft_b->maximum_particle_radius) * 2.0f;
 			if (cell_size <= 0.0f) continue;
 
+			/* Any touching pair has a contact point inside both bounds, so only
+			   particles near the bounds' intersection can collide. The margin covers
+			   particles moved by contacts solved since the bounds were computed. */
+			const float margin = cell_size * 0.5f;
+			const vec3f_t overlap_min = vec3fMax(soft_a->bounds_min, soft_b->bounds_min);
+			const vec3f_t overlap_max = vec3fMin(soft_a->bounds_max, soft_b->bounds_max);
+
 			physics->contact_hash_used_count = 0;
 			for (int b_index = 0; b_index < soft_b->body_count; ++b_index) {
 				vec3f_t position = soft_b->bodies[b_index]->position;
+				if (!physicsSphereNearBox(position,
+					soft_b->bodies[b_index]->collision_radius + margin,
+					overlap_min, overlap_max)) continue;
 				int cell_x = (int)floorf(position.x / cell_size);
 				int cell_y = (int)floorf(position.y / cell_size);
 				int cell_z = (int)floorf(position.z / cell_size);
@@ -406,6 +706,8 @@ void physicsSolveSoftBodyContacts(physics_t* physics) {
 
 			for (int a_index = 0; a_index < soft_a->body_count; ++a_index) {
 				physics_body_t* a = soft_a->bodies[a_index];
+				if (!physicsSphereNearBox(a->position, a->collision_radius + margin,
+					overlap_min, overlap_max)) continue;
 				int center_x = (int)floorf(a->position.x / cell_size);
 				int center_y = (int)floorf(a->position.y / cell_size);
 				int center_z = (int)floorf(a->position.z / cell_size);
@@ -519,7 +821,9 @@ void physicsSolveGroundConstraint(physics_t* physics, physics_body_t* body, floa
 	if (body->inverse_mass == 0.0f) {
 		return;
 	}
-	const float constraint_value = body->position.y - body->half_extents.y - physics->ground_height;
+	/* Same radius as particle-particle contacts, so resting and stacking agree. */
+	const float constraint_value = body->position.y - physicsBodyContactRadius(body) -
+		physics->ground_height;
 	if (constraint_value >= 0.0f && body->contact_lambda == 0.0f) {
 		return;
 	}

@@ -34,3 +34,9 @@ int	threadRun(thread_t* thread) {
 void threadSleep(uint32_t ms){
 	Sleep(ms);
 }
+
+int threadGetProcessorCount(void) {
+	SYSTEM_INFO info;
+	GetSystemInfo(&info);
+	return info.dwNumberOfProcessors > 0 ? (int)info.dwNumberOfProcessors : 1;
+}

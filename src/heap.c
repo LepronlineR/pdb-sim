@@ -52,14 +52,16 @@ void* heapAlloc(heap_t* heap, size_t size, size_t alignment) {
 	
 	void* address = tlsf_memalign(heap->tlsf, alignment, size);
 	if (!address) {
-		size_t object_size = __max(heap->grow_increment, size * 2) + sizeof(heap_obj_t);
-		heap_obj_t* object = VirtualAlloc(NULL, object_size + tlsf_pool_overhead(),
+		// the pool lives right after the header, so size it without the header
+		size_t pool_size = __max(heap->grow_increment, size * 2) + tlsf_pool_overhead();
+		heap_obj_t* object = VirtualAlloc(NULL, sizeof(heap_obj_t) + pool_size,
 			MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-		if (!object) { // cannot allocate enough for the object 
+		if (!object) { // cannot allocate enough for the object
 			debugPrint(DEBUG_PRINT_ERROR, "Heap Allocation Error: unable to allocate enough memory for the object.\n");
+			mutexUnlock(heap->mutex);
 			return NULL;
 		}
-		object->pool = tlsf_add_pool(heap->tlsf, object + 1, object_size);
+		object->pool = tlsf_add_pool(heap->tlsf, object + 1, pool_size);
 		object->next = heap->object;
 		heap->object = object;
 		object->backtrace_frames = debugBacktrace(object->backtrace, 32);

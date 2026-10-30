@@ -52,7 +52,6 @@ void physicsSolveVolumeConstraint(physics_volume_constraint_t* constraint,
 void physicsSolveGroundConstraint(physics_t* physics, physics_body_t* body,
 	float inverse_dt_squared);
 void physicsSolveSoftBodyContacts(physics_t* physics);
-void physicsDampSoftBodyContactVelocities(physics_t* physics);
 void physicsUpdateSoftBodyBounds(physics_t* physics);
 bool physicsSoftBodiesOverlap(physics_volume_constraint_t* a,
 	physics_volume_constraint_t* b);

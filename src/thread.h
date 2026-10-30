@@ -24,4 +24,8 @@ int threadRun(thread_t* thread);
 // 
 void threadSleep(uint32_t ms);
 
+// Returns the number of logical processors available to the process.
+//
+int threadGetProcessorCount(void);
+
 #endif
