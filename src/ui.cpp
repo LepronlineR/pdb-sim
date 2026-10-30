@@ -46,10 +46,10 @@ extern "C" ui_t* uiCreate(heap_t* heap, wm_window_t* window) {
 	ui->ball_info.color[2] = 0.55f;
 	ui->ball_info.radius = 1.0f;
 	ui->ball_info.mass = 1.0f;
-	ui->ball_info.structural_compliance = 3.0e-5f;
-	ui->ball_info.bending_compliance = 2.0e-4f;
+	ui->ball_info.structural_compliance = 3.0e-3f;
+	ui->ball_info.bending_compliance = 3.0e-3f;
 	ui->ball_info.volume_compliance = 1.0e-8f;
-	ui->ball_info.velocity_retention = 0.90f;
+	ui->ball_info.velocity_retention = 0.30f;
 	ui->initialized = false;
 	ui->spawn_pending = false;
 	active_ui = ui;
@@ -171,9 +171,9 @@ extern "C" void uiRendererDraw(ui_t* ui, gpu_t* gpu,
 	ImGui::DragFloat("Radius", &ui->ball_info.radius, 0.01f, 0.1f, 5.0f, "%.2f");
 	ImGui::DragFloat("Mass", &ui->ball_info.mass, 0.05f, 0.01f, 100.0f, "%.2f kg");
 	ImGui::InputFloat("Structural compliance", &ui->ball_info.structural_compliance,
-		1.0e-6f, 1.0e-5f, "%.3e");
+		1.0e-4f, 1.0e-3f, "%.3e");
 	ImGui::InputFloat("Bending compliance", &ui->ball_info.bending_compliance,
-		1.0e-6f, 1.0e-5f, "%.3e");
+		1.0e-4f, 1.0e-3f, "%.3e");
 	ImGui::InputFloat("Volume compliance", &ui->ball_info.volume_compliance,
 		1.0e-9f, 1.0e-8f, "%.3e");
 	ImGui::SliderFloat("Velocity retention", &ui->ball_info.velocity_retention,

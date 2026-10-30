@@ -76,8 +76,11 @@ scene_t* sceneCreate(heap_t* heap, fs_t* fs, wm_window_t* window, renderer_t* re
 	world->physics = physicsCreate(heap);
 	world->accumulator = 0.0f;
 	physicsSetGravity(world->physics, -9.81f);
-	physicsSetSolverIterations(world->physics, 6);
+	physicsSetSubsteps(world->physics, 8);
+	physicsSetSolverIterations(world->physics, 1);
 	physicsSetGroundCompliance(world->physics, 0.0f);
+	physicsSetFriction(world->physics, 0.6f, 0.4f);
+	physicsSetRestitution(world->physics, 0.2f);
 	name_component_t* physics_name = ecsEntityGet(scene->ecs, physics_entity, scene->name_type, true);
 	strcpy_s(physics_name->name, sizeof(physics_name->name), "physics world");
 
