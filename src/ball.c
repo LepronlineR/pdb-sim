@@ -25,10 +25,10 @@ ball_info_t ballInfoDefault(vec3f_t position, vec3f_t color, float mass) {
 		.color = color,
 		.radius = 1.0f,
 		.mass = mass,
-		.structural_compliance = 3.0e-5f,
-		.bending_compliance = 2.0e-4f,
+		.structural_compliance = 3.0e-3f,
+		.bending_compliance = 3.0e-3f,
 		.volume_compliance = 1.0e-8f,
-		.velocity_retention = 0.90f
+		.velocity_retention = 0.30f
 	};
 }
 
