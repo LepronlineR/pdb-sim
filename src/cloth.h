@@ -1,6 +1,7 @@
 #ifndef __CLOTH_H__
 #define __CLOTH_H__
 
+#include "physics.h"
 #include "vec3f.h"
 #include <stdbool.h>
 #include <stdint.h>
@@ -45,5 +46,8 @@ cloth_t* clothCreate(heap_t* heap, physics_t* physics, const cloth_info_t* info)
 void clothDestroy(cloth_t* cloth);
 void clothUpdateMesh(cloth_t* cloth);
 gpu_mesh_info_t* clothGetMesh(cloth_t* cloth);
+// The cloth's particles are [first_particle, first_particle + particle_count).
+void clothGetParticles(cloth_t* cloth, physics_particle_id_t* first_particle,
+	int* particle_count);
 
 #endif

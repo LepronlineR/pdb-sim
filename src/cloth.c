@@ -216,6 +216,12 @@ void clothUpdateMesh(cloth_t* cloth) {
 	}
 }
 
+void clothGetParticles(cloth_t* cloth, physics_particle_id_t* first_particle,
+	int* particle_count) {
+	*first_particle = cloth->first_particle;
+	*particle_count = cloth->resolution * cloth->resolution;
+}
+
 gpu_mesh_info_t* clothGetMesh(cloth_t* cloth) {
 	return &cloth->mesh;
 }
