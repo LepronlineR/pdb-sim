@@ -199,20 +199,24 @@ static void uiDrawToolbar(ui_t* ui) {
 
 static void uiDrawHierarchy(ui_t* ui) {
 	ImGui::SetNextWindowPos(ImVec2(12.0f, 12.0f), ImGuiCond_FirstUseEver);
-	ImGui::SetNextWindowSize(ImVec2(250.0f, 380.0f), ImGuiCond_FirstUseEver);
+	ImGui::SetNextWindowSize(ImVec2(330.0f, 380.0f), ImGuiCond_FirstUseEver);
 	ImGui::Begin("Hierarchy");
 	const bool editing = ui->view.mode == UI_MODE_EDIT;
 	if (ImGui::Button("Add Ball")) uiQueueSimple(ui, UI_COMMAND_ADD_BALL, -1);
 	ImGui::SameLine();
 	if (ImGui::Button("Add Cloth")) uiQueueSimple(ui, UI_COMMAND_ADD_CLOTH, -1);
+	ImGui::SameLine();
+	if (ImGui::Button("Add Sphere")) uiQueueSimple(ui, UI_COMMAND_ADD_SPHERE, -1);
 	ImGui::BeginDisabled(!editing);
-	if (ImGui::Button("Load demo")) uiQueueSimple(ui, UI_COMMAND_LOAD_DEMO, -1);
+	if (ImGui::Button("Trampoline demo")) uiQueueSimple(ui, UI_COMMAND_LOAD_DEMO, -1);
+	ImGui::SameLine();
+	if (ImGui::Button("Drape demo")) uiQueueSimple(ui, UI_COMMAND_LOAD_DRAPE_DEMO, -1);
 	ImGui::SameLine();
 	if (ImGui::Button("Clear")) uiQueueSimple(ui, UI_COMMAND_CLEAR, -1);
 	ImGui::EndDisabled();
 	ImGui::Separator();
 	if (ui->view.object_count == 0) {
-		ImGui::TextDisabled("The scene is empty. Add a ball or a cloth.");
+		ImGui::TextDisabled("The scene is empty. Add an object or load a demo.");
 	}
 	for (int i = 0; i < ui->view.object_count; ++i) {
 		const ui_object_t* object = &ui->view.objects[i];
@@ -258,7 +262,8 @@ static void uiDrawInspector(ui_t* ui) {
 	const bool editing = ui->view.mode == UI_MODE_EDIT;
 	ImGui::Text("%s", p->name);
 	ImGui::SameLine();
-	ImGui::TextDisabled(p->kind == UI_OBJECT_BALL ? "(ball)" : "(cloth)");
+	ImGui::TextDisabled(p->kind == UI_OBJECT_BALL ? "(ball)" :
+		p->kind == UI_OBJECT_CLOTH ? "(cloth)" : "(solid sphere)");
 	if (!editing) {
 		ImGui::TextDisabled("Read-only while playing: Stop to edit.");
 	}
@@ -267,14 +272,20 @@ static void uiDrawInspector(ui_t* ui) {
 	bool changed = false;
 	changed |= ImGui::DragFloat3("Position", p->position, 0.02f);
 	changed |= ImGui::ColorEdit3("Color", p->color);
-	changed |= ImGui::DragFloat("Mass", &p->mass, 0.02f, 0.01f, 100.0f, "%.2f kg");
+	if (p->kind == UI_OBJECT_SPHERE) {
+		changed |= ImGui::DragFloat("Radius", &p->radius, 0.01f, 0.1f, 10.0f, "%.2f m");
+		ImGui::TextDisabled("Static: it never moves while playing.");
+	}
+	else {
+		changed |= ImGui::DragFloat("Mass", &p->mass, 0.02f, 0.01f, 100.0f, "%.2f kg");
+	}
 	if (p->kind == UI_OBJECT_BALL) {
 		changed |= ImGui::DragFloat("Radius", &p->radius, 0.01f, 0.1f, 5.0f, "%.2f m");
 		changed |= ImGui::InputFloat("Structural compl.", &p->stretch_compliance, 1.0e-4f, 1.0e-3f, "%.2e");
 		changed |= ImGui::InputFloat("Bending compl.", &p->bending_compliance, 1.0e-4f, 1.0e-3f, "%.2e");
 		changed |= ImGui::InputFloat("Volume compl.", &p->volume_compliance, 1.0e-9f, 1.0e-8f, "%.2e");
 	}
-	else {
+	else if (p->kind == UI_OBJECT_CLOTH) {
 		changed |= ImGui::SliderInt("Resolution", &p->resolution, 4, 64);
 		changed |= ImGui::DragFloat("Size", &p->size, 0.02f, 0.5f, 10.0f, "%.2f m");
 		changed |= ImGui::InputFloat("Stretch compl.", &p->stretch_compliance, 1.0e-4f, 1.0e-3f, "%.2e");
@@ -283,7 +294,9 @@ static void uiDrawInspector(ui_t* ui) {
 		changed |= ImGui::SliderFloat("Air drag", &p->drag, 0.0f, 3.0f, "%.2f /s");
 		changed |= uiPinCombo(&p->pin);
 	}
-	changed |= ImGui::SliderFloat("Velocity retention", &p->velocity_retention, 0.0f, 1.0f, "%.2f");
+	if (p->kind != UI_OBJECT_SPHERE) {
+		changed |= ImGui::SliderFloat("Velocity retention", &p->velocity_retention, 0.0f, 1.0f, "%.2f");
+	}
 	ImGui::PopItemWidth();
 	ImGui::EndDisabled();
 	if (changed && editing) {

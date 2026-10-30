@@ -75,6 +75,18 @@ void physicsMoveGrab(physics_t* physics, vec3f_t target);
 void physicsReleaseGrab(physics_t* physics);
 bool physicsIsGrabbing(physics_t* physics);
 
+// Adds a static, smooth sphere that particles collide with (no soft body, never
+// moves on its own).
+//
+// RETURN: the collider index, or -1 when full
+int physicsAddSphereCollider(physics_t* physics, vec3f_t center, float radius);
+void physicsSetSphereCollider(physics_t* physics, int collider, vec3f_t center, float radius);
+// Finds the nearest sphere collider along a ray.
+//
+// RETURN: true if one was hit; collider and the distance to its surface are set
+bool physicsPickSphereCollider(physics_t* physics, vec3f_t origin, vec3f_t direction,
+	int* collider, float* distance);
+
 void physicsSetGroundHeight(physics_t* physics, float height);
 void physicsSetGroundCompliance(physics_t* physics, float compliance);
 void physicsSetGravity(physics_t* physics, float gravity_meters_per_second_squared);

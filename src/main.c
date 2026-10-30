@@ -25,6 +25,7 @@ typedef struct smoke_test_t {
 	uint64_t authored_hash;
 	uint64_t demo_hash;
 	uint64_t moved_hash;
+	uint64_t drape_hash;
 	int moved_id;
 } smoke_test_t;
 
@@ -153,6 +154,36 @@ static bool smokeTestStep(smoke_test_t* smoke, scene_t* scene, ui_t* ui, wm_wind
 			const bool found = sceneGetObjectProperties(scene, smoke->moved_id, &properties);
 			smokeCheck(smoke, found && properties.mass == 2.0f && sceneGetObjectCount(scene) == 6 &&
 				sceneHashParticles(scene) != smoke->moved_hash, "inspector edits rebuild the object");
+			smokeCommand(ui, UI_COMMAND_LOAD_DRAPE_DEMO, -1);
+			break;
+		}
+		case 315:
+			smokeCheck(smoke, sceneGetObjectCount(scene) == 2, "drape demo loads a sphere and a cloth");
+			smoke->drape_hash = sceneHashParticles(scene);
+			smokeCommand(ui, UI_COMMAND_PLAY, -1);
+			break;
+		case 435:
+			smokeCheck(smoke, sceneHashParticles(scene) != smoke->drape_hash, "the cloth falls while playing");
+			smokeCommand(ui, UI_COMMAND_STOP, -1);
+			break;
+		case 440:
+			smokeCheck(smoke, sceneHashParticles(scene) == smoke->drape_hash, "stop restores the drape scene");
+			smokeCommand(ui, UI_COMMAND_ADD_SPHERE, -1);  // at the camera target
+			smokeCommand(ui, UI_COMMAND_SELECT, -1);
+			break;
+		case 445:
+			center.select_held = true;
+			sceneSetPointerOverride(scene, &center);
+			break;
+		case 446:
+			sceneSetPointerOverride(scene, &center);  // released: a click
+			break;
+		case 450: {
+			sceneSetPointerOverride(scene, NULL);
+			ui_object_properties_t properties;
+			const bool found = sceneGetObjectProperties(scene, sceneGetSelectedId(scene), &properties);
+			smokeCheck(smoke, sceneGetObjectCount(scene) == 3 && found && properties.kind == UI_OBJECT_SPHERE,
+				"a solid sphere can be added and clicked to select");
 			break;
 		}
 	}
@@ -171,7 +202,7 @@ static bool smokeTestStep(smoke_test_t* smoke, scene_t* scene, ui_t* ui, wm_wind
 		smoke->max_grabbed = grabbed > smoke->max_grabbed ? grabbed : smoke->max_grabbed;
 	}
 	smoke->frame++;
-	return f < 315;
+	return f < 455;
 }
 
 int main(int argc, const char*argv[]) {
@@ -219,7 +250,7 @@ int main(int argc, const char*argv[]) {
 	wmDestroyWindow(window);
 	heapDestroy(heap);
 	if (smoke_mode) {
-		const bool finished = smoke.frame > 310;
+		const bool finished = smoke.frame > 450;
 		if (!finished) smoke.failures++;
 		debugPrintConsole("smoke test %s: %d frames, %d failed check(s)\n",
 			smoke.failures == 0 ? "passed" : "FAILED", smoke.frame, smoke.failures);

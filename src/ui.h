@@ -29,7 +29,8 @@ typedef enum ui_play_mode_t {
 
 typedef enum ui_object_kind_t {
 	UI_OBJECT_BALL,
-	UI_OBJECT_CLOTH
+	UI_OBJECT_CLOTH,
+	UI_OBJECT_SPHERE  // solid, static sphere collider
 } ui_object_kind_t;
 
 // Every editable setting of a scene object. Ball and cloth share the common
@@ -44,8 +45,9 @@ typedef struct ui_object_properties_t {
 	float velocity_retention;
 	float stretch_compliance;  // ball: structural springs, cloth: stretch
 	float bending_compliance;
-	// ball
+	// ball and sphere
 	float radius;
+	// ball
 	float volume_compliance;
 	// cloth
 	int resolution;
@@ -94,7 +96,9 @@ typedef enum ui_command_type_t {
 	UI_COMMAND_STEP,
 	UI_COMMAND_ADD_BALL,
 	UI_COMMAND_ADD_CLOTH,
+	UI_COMMAND_ADD_SPHERE,
 	UI_COMMAND_LOAD_DEMO,
+	UI_COMMAND_LOAD_DRAPE_DEMO,
 	UI_COMMAND_CLEAR,
 	UI_COMMAND_SELECT,      // id, or -1 to deselect
 	UI_COMMAND_DELETE,      // id

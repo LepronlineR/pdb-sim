@@ -20,6 +20,7 @@
 
 #define _USE_MATH_DEFINES
 #include <math.h>
+#include <float.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,6 +35,9 @@
 #define SCENE_GRAB_RADIUS 0.35f
 /* A left press and release that moved less than this many pixels is a click. */
 #define SCENE_CLICK_SLOP 4
+/* Resolution of the shared unit-sphere mesh used to draw sphere colliders. */
+#define SCENE_SPHERE_SEGMENTS 40
+#define SCENE_SPHERE_RINGS 20
 
 enum {
 	SCENE_MAX_OBJECTS = UI_MAX_OBJECTS
@@ -47,8 +51,15 @@ typedef enum scene_mode_t {
 
 typedef enum scene_object_kind_t {
 	SCENE_OBJECT_BALL,
-	SCENE_OBJECT_CLOTH
+	SCENE_OBJECT_CLOTH,
+	SCENE_OBJECT_SPHERE   // a solid, static sphere collider (no soft body)
 } scene_object_kind_t;
+
+typedef struct scene_sphere_info_t {
+	vec3f_t center;
+	vec3f_t color;
+	float radius;
+} scene_sphere_info_t;
 
 /* An authored object. The settings are the source of truth; the resource,
    mesh and particle range are runtime data rebuilt with the physics world. */
@@ -58,10 +69,12 @@ typedef struct scene_object_t {
 	char name[UI_NAME_LENGTH];
 	ball_info_t ball;
 	cloth_info_t cloth;
+	scene_sphere_info_t sphere;
 	bool transient;  // added during play: removed on Stop
 	bool hidden;     // deleted during play: restored on Stop
 	ecs_entity_t entity;
-	void* resource;  // ball_t* or cloth_t*
+	void* resource;  // ball_t* or cloth_t*; NULL for spheres
+	int collider;    // spheres: physics collider index, -1 when not created
 	gpu_mesh_info_t* mesh;
 	physics_particle_id_t first_particle;
 	int particle_count;
@@ -86,6 +99,9 @@ typedef struct scene_t {
 
 	shader_loader_t* shaders;
 	gpu_mesh_info_t cube_mesh;
+	gpu_mesh_info_t sphere_mesh;
+	vec3f_t* sphere_vertices;
+	uint16_t* sphere_indices;
 	// width / height of the window's client area, used by projection and picking
 	float aspect_ratio;
 
@@ -95,6 +111,7 @@ typedef struct scene_t {
 	int next_object_id;
 	int ball_counter;
 	int cloth_counter;
+	int sphere_counter;
 	int selected_id;
 	uint32_t selected_revision;
 
@@ -126,6 +143,8 @@ typedef struct scene_draw_uniform_t {
 	float material[4];
 } scene_draw_uniform_t;
 
+static void sceneBuildSphereMesh(scene_t* scene);
+
 static physics_world_component_t* sceneGetWorld(scene_t* scene) {
 	return ecsEntityGet(scene->ecs, scene->physics_entity, scene->physics_type, true);
 }
@@ -142,12 +161,39 @@ static scene_object_t* sceneFindObject(scene_t* scene, int id) {
 }
 
 static vec3f_t sceneObjectPosition(const scene_object_t* object) {
-	return object->kind == SCENE_OBJECT_BALL ? object->ball.position : object->cloth.center;
+	switch (object->kind) {
+		case SCENE_OBJECT_BALL: return object->ball.position;
+		case SCENE_OBJECT_CLOTH: return object->cloth.center;
+		default: return object->sphere.center;
+	}
 }
 
 static void sceneObjectSetPosition(scene_object_t* object, vec3f_t position) {
-	if (object->kind == SCENE_OBJECT_BALL) object->ball.position = position;
-	else object->cloth.center = position;
+	switch (object->kind) {
+		case SCENE_OBJECT_BALL: object->ball.position = position; break;
+		case SCENE_OBJECT_CLOTH: object->cloth.center = position; break;
+		default: object->sphere.center = position; break;
+	}
+}
+
+/* Spheres are drawn with the shared unit mesh, placed and sized by the model's
+   transform and colored by its tint; soft bodies carry world-space vertices. */
+static void sceneObjectUpdateModel(scene_t* scene, scene_object_t* object) {
+	model_component_t* model = ecsEntityGet(scene->ecs, object->entity, scene->model_type, true);
+	transform_component_t* transform = ecsEntityGet(scene->ecs, object->entity,
+		scene->transform_type, true);
+	if (!model || !transform) return;
+	model->mesh_info = object->mesh;
+	transformIdentity(&transform->transform);
+	model->tint[0] = model->tint[1] = model->tint[2] = 1.0f;
+	if (object->kind == SCENE_OBJECT_SPHERE) {
+		const float r = object->sphere.radius;
+		transform->transform.translation = object->sphere.center;
+		transform->transform.scale = (vec3f_t){ r, r, r };
+		model->tint[0] = object->sphere.color.x;
+		model->tint[1] = object->sphere.color.y;
+		model->tint[2] = object->sphere.color.z;
+	}
 }
 
 //  --------------------------------------------------------------------------
@@ -159,9 +205,15 @@ static void sceneObjectSetPosition(scene_object_t* object, vec3f_t position) {
 static bool sceneObjectCreateRuntime(scene_t* scene, scene_object_t* object) {
 	physics_t* physics = sceneGetPhysics(scene);
 	object->resource = NULL;
+	object->collider = -1;
 	object->mesh = NULL;
 	object->particle_count = 0;
-	if (object->kind == SCENE_OBJECT_BALL) {
+	if (object->kind == SCENE_OBJECT_SPHERE) {
+		object->collider = physicsAddSphereCollider(physics, object->sphere.center,
+			object->sphere.radius);
+		if (object->collider >= 0) object->mesh = &scene->sphere_mesh;
+	}
+	else if (object->kind == SCENE_OBJECT_BALL) {
 		ball_t* ball = ballCreate(scene->heap, physics, &object->ball);
 		if (ball) {
 			object->resource = ball;
@@ -177,9 +229,8 @@ static bool sceneObjectCreateRuntime(scene_t* scene, scene_object_t* object) {
 			clothGetParticles(cloth, &object->first_particle, &object->particle_count);
 		}
 	}
-	model_component_t* model = ecsEntityGet(scene->ecs, object->entity, scene->model_type, true);
-	if (model) model->mesh_info = object->mesh;
-	return object->resource != NULL;
+	sceneObjectUpdateModel(scene, object);
+	return object->mesh != NULL;
 }
 
 static void sceneObjectDestroyRuntime(scene_t* scene, scene_object_t* object) {
@@ -188,6 +239,7 @@ static void sceneObjectDestroyRuntime(scene_t* scene, scene_object_t* object) {
 		else clothDestroy((cloth_t*)object->resource);
 	}
 	object->resource = NULL;
+	object->collider = -1;
 	object->mesh = NULL;
 	object->particle_count = 0;
 	model_component_t* model = ecsEntityGet(scene->ecs, object->entity, scene->model_type, true);
@@ -279,7 +331,8 @@ static void sceneSelect(scene_t* scene, int id) {
 /* Adds an object. In Edit it becomes part of the authored scene; while playing
    it is transient and disappears on Stop. */
 static scene_object_t* sceneAddObject(scene_t* scene, scene_object_kind_t kind,
-	const ball_info_t* ball, const cloth_info_t* cloth, const char* name) {
+	const ball_info_t* ball, const cloth_info_t* cloth, const scene_sphere_info_t* sphere,
+	const char* name) {
 	if (scene->object_count >= SCENE_MAX_OBJECTS) return NULL;
 	scene_object_t* object = &scene->objects[scene->object_count];
 	memset(object, 0, sizeof(*object));
@@ -287,6 +340,7 @@ static scene_object_t* sceneAddObject(scene_t* scene, scene_object_kind_t kind,
 	object->kind = kind;
 	if (ball) object->ball = *ball;
 	if (cloth) object->cloth = *cloth;
+	if (sphere) object->sphere = *sphere;
 	object->transient = scene->mode != SCENE_MODE_EDIT;
 	strcpy_s(object->name, sizeof(object->name), name);
 
@@ -344,6 +398,7 @@ static void sceneClearObjects(scene_t* scene) {
 	while (scene->object_count > 0) sceneRemoveObjectAt(scene, scene->object_count - 1);
 	scene->ball_counter = 0;
 	scene->cloth_counter = 0;
+	scene->sphere_counter = 0;
 	scene->moving = false;
 	sceneRebuild(scene, false);
 }
@@ -363,7 +418,7 @@ static void sceneAddBall(scene_t* scene) {
 		colors[scene->ball_counter % _countof(colors)], 1.0f);
 	char name[UI_NAME_LENGTH];
 	sprintf_s(name, sizeof(name), "Ball %d", ++scene->ball_counter);
-	scene_object_t* object = sceneAddObject(scene, SCENE_OBJECT_BALL, &info, NULL, name);
+	scene_object_t* object = sceneAddObject(scene, SCENE_OBJECT_BALL, &info, NULL, NULL, name);
 	if (object) sceneSelect(scene, object->id);
 }
 
@@ -373,8 +428,35 @@ static void sceneAddCloth(scene_t* scene) {
 	const cloth_info_t info = clothInfoDefault(center, (vec3f_t){ .92f, .86f, .70f });
 	char name[UI_NAME_LENGTH];
 	sprintf_s(name, sizeof(name), "Cloth %d", ++scene->cloth_counter);
-	scene_object_t* object = sceneAddObject(scene, SCENE_OBJECT_CLOTH, NULL, &info, name);
+	scene_object_t* object = sceneAddObject(scene, SCENE_OBJECT_CLOTH, NULL, &info, NULL, name);
 	if (object) sceneSelect(scene, object->id);
+}
+
+static void sceneAddSphere(scene_t* scene) {
+	const scene_sphere_info_t info = {
+		.center = sceneSpawnPoint(scene), .color = { .55f, .58f, .64f }, .radius = 1.0f
+	};
+	char name[UI_NAME_LENGTH];
+	sprintf_s(name, sizeof(name), "Sphere %d", ++scene->sphere_counter);
+	scene_object_t* object = sceneAddObject(scene, SCENE_OBJECT_SPHERE, NULL, NULL, &info, name);
+	if (object) sceneSelect(scene, object->id);
+}
+
+/* A free cloth above a solid sphere: press Play and it falls and drapes. */
+static void sceneLoadDrapeDemo(scene_t* scene) {
+	sceneClearObjects(scene);
+	const scene_sphere_info_t sphere = {
+		.center = { 0, 1.2f, 0 }, .color = { .55f, .58f, .64f }, .radius = 1.2f
+	};
+	sceneAddObject(scene, SCENE_OBJECT_SPHERE, NULL, NULL, &sphere, "Sphere");
+	cloth_info_t cloth = clothInfoDefault((vec3f_t){ 0, 3.6f, 0 }, (vec3f_t){ .80f, .22f, .26f });
+	cloth.resolution = 40;
+	cloth.size = 3.4f;
+	cloth.pin = CLOTH_PIN_NONE;
+	sceneAddObject(scene, SCENE_OBJECT_CLOTH, NULL, &cloth, NULL, "Tablecloth");
+	scene->sphere_counter = 1;
+	scene->cloth_counter = 1;
+	sceneSelect(scene, -1);
 }
 
 /* A trampoline (cloth pinned along its border) with two balls above it, a
@@ -385,22 +467,22 @@ static void sceneLoadDemo(scene_t* scene) {
 	trampoline.pin = CLOTH_PIN_BORDER;
 	trampoline.stretch_compliance = 3.0e-3f;
 	trampoline.shear_compliance = 3.0e-3f;
-	sceneAddObject(scene, SCENE_OBJECT_CLOTH, NULL, &trampoline, "Trampoline");
+	sceneAddObject(scene, SCENE_OBJECT_CLOTH, NULL, &trampoline, NULL, "Trampoline");
 	cloth_info_t banner = clothInfoDefault((vec3f_t){-4.5f,5.5f,1.5f}, (vec3f_t){.78f,.20f,.24f});
 	banner.resolution = 24;
 	banner.size = 2.5f;
 	banner.pin = CLOTH_PIN_EDGE;
-	sceneAddObject(scene, SCENE_OBJECT_CLOTH, NULL, &banner, "Banner");
+	sceneAddObject(scene, SCENE_OBJECT_CLOTH, NULL, &banner, NULL, "Banner");
 
 	ball_info_t ball = ballInfoDefault((vec3f_t){-.85f,5,.45f}, (vec3f_t){.95f,.30f,.22f}, 1.0f);
-	sceneAddObject(scene, SCENE_OBJECT_BALL, &ball, NULL, "Red ball");
+	sceneAddObject(scene, SCENE_OBJECT_BALL, &ball, NULL, NULL, "Red ball");
 	ball = ballInfoDefault((vec3f_t){.85f,6.5f,-.45f}, (vec3f_t){.25f,.82f,.42f}, 1.5f);
-	sceneAddObject(scene, SCENE_OBJECT_BALL, &ball, NULL, "Green ball");
+	sceneAddObject(scene, SCENE_OBJECT_BALL, &ball, NULL, NULL, "Green ball");
 	ball = ballInfoDefault((vec3f_t){-3,1.2f,-3}, (vec3f_t){.1f,.13f,.72f}, 0.4f);
 	ball.radius = 0.6f;
-	sceneAddObject(scene, SCENE_OBJECT_BALL, &ball, NULL, "Small ball");
+	sceneAddObject(scene, SCENE_OBJECT_BALL, &ball, NULL, NULL, "Small ball");
 	ball = ballInfoDefault((vec3f_t){4.5f,1.2f,1}, (vec3f_t){.9f,.82f,.12f}, 0.5f);
-	sceneAddObject(scene, SCENE_OBJECT_BALL, &ball, NULL, "Yellow ball");
+	sceneAddObject(scene, SCENE_OBJECT_BALL, &ball, NULL, NULL, "Yellow ball");
 	scene->ball_counter = 4;
 	scene->cloth_counter = 2;
 	sceneSelect(scene, -1);
@@ -410,7 +492,8 @@ static ui_object_properties_t sceneObjectProperties(const scene_object_t* object
 	ui_object_properties_t p;
 	memset(&p, 0, sizeof(p));
 	p.id = object->id;
-	p.kind = object->kind == SCENE_OBJECT_BALL ? UI_OBJECT_BALL : UI_OBJECT_CLOTH;
+	p.kind = object->kind == SCENE_OBJECT_BALL ? UI_OBJECT_BALL :
+		object->kind == SCENE_OBJECT_CLOTH ? UI_OBJECT_CLOTH : UI_OBJECT_SPHERE;
 	strcpy_s(p.name, sizeof(p.name), object->name);
 	const vec3f_t position = sceneObjectPosition(object);
 	p.position[0] = position.x;
@@ -425,6 +508,11 @@ static ui_object_properties_t sceneObjectProperties(const scene_object_t* object
 		p.bending_compliance = b->bending_compliance;
 		p.radius = b->radius;
 		p.volume_compliance = b->volume_compliance;
+	}
+	else if (object->kind == SCENE_OBJECT_SPHERE) {
+		const scene_sphere_info_t* sphere = &object->sphere;
+		p.color[0] = sphere->color.x; p.color[1] = sphere->color.y; p.color[2] = sphere->color.z;
+		p.radius = sphere->radius;
 	}
 	else {
 		const cloth_info_t* c = &object->cloth;
@@ -459,6 +547,10 @@ static void sceneEditObject(scene_t* scene, const ui_object_properties_t* p) {
 		b->bending_compliance = __max(0.0f, p->bending_compliance);
 		b->radius = __max(0.1f, __min(5.0f, p->radius));
 		b->volume_compliance = __max(0.0f, p->volume_compliance);
+	}
+	else if (object->kind == SCENE_OBJECT_SPHERE) {
+		object->sphere.color = color;
+		object->sphere.radius = __max(0.1f, __min(10.0f, p->radius));
 	}
 	else {
 		cloth_info_t* c = &object->cloth;
@@ -518,6 +610,10 @@ static void sceneHandleCommands(scene_t* scene, ui_t* ui) {
 				break;
 			case UI_COMMAND_ADD_BALL: sceneAddBall(scene); break;
 			case UI_COMMAND_ADD_CLOTH: sceneAddCloth(scene); break;
+			case UI_COMMAND_ADD_SPHERE: sceneAddSphere(scene); break;
+			case UI_COMMAND_LOAD_DRAPE_DEMO:
+				if (scene->mode == SCENE_MODE_EDIT) sceneLoadDrapeDemo(scene);
+				break;
 			case UI_COMMAND_LOAD_DEMO:
 				if (scene->mode == SCENE_MODE_EDIT) sceneLoadDemo(scene);
 				break;
@@ -615,10 +711,56 @@ void sceneLoadResources(scene_t* scene) {
 		.idx_data = indices,
 		.idx_data_size = sizeof(indices)
 	};
+	sceneBuildSphereMesh(scene);
+}
+
+/* A unit UV sphere: position, normal and white color per vertex. Triangles are
+   wound like the ball mesh so their outsides are front faces. */
+static void sceneBuildSphereMesh(scene_t* scene) {
+	const int columns = SCENE_SPHERE_SEGMENTS + 1;
+	const int vertex_count = (SCENE_SPHERE_RINGS + 1) * columns;
+	const int index_count = SCENE_SPHERE_RINGS * SCENE_SPHERE_SEGMENTS * 6;
+	scene->sphere_vertices = heapAlloc(scene->heap, sizeof(vec3f_t) * 3 * vertex_count,
+		_Alignof(vec3f_t));
+	scene->sphere_indices = heapAlloc(scene->heap, sizeof(uint16_t) * index_count,
+		_Alignof(uint16_t));
+	for (int ring = 0; ring <= SCENE_SPHERE_RINGS; ++ring) {
+		const float theta = (float)M_PI * (float)ring / (float)SCENE_SPHERE_RINGS;
+		for (int segment = 0; segment <= SCENE_SPHERE_SEGMENTS; ++segment) {
+			const float phi = 2.0f * (float)M_PI * (float)segment / (float)SCENE_SPHERE_SEGMENTS;
+			const vec3f_t p = { sinf(theta) * cosf(phi), cosf(theta), sinf(theta) * sinf(phi) };
+			const int v = ring * columns + segment;
+			scene->sphere_vertices[v * 3] = p;
+			scene->sphere_vertices[v * 3 + 1] = p;
+			scene->sphere_vertices[v * 3 + 2] = vec3fOne();
+		}
+	}
+	int index = 0;
+	for (int ring = 0; ring < SCENE_SPHERE_RINGS; ++ring) {
+		for (int segment = 0; segment < SCENE_SPHERE_SEGMENTS; ++segment) {
+			const uint16_t a = (uint16_t)(ring * columns + segment);
+			const uint16_t b = (uint16_t)(a + 1);
+			const uint16_t c = (uint16_t)(a + columns);
+			const uint16_t d = (uint16_t)(c + 1);
+			scene->sphere_indices[index++] = a; scene->sphere_indices[index++] = c;
+			scene->sphere_indices[index++] = b;
+			scene->sphere_indices[index++] = b; scene->sphere_indices[index++] = c;
+			scene->sphere_indices[index++] = d;
+		}
+	}
+	scene->sphere_mesh = (gpu_mesh_info_t){
+		.layout = GPU_MESH_LAYOUT_TRI_P444_N444_C444_I2,
+		.vtx_data = scene->sphere_vertices,
+		.vtx_data_size = sizeof(vec3f_t) * 3 * vertex_count,
+		.idx_data = scene->sphere_indices,
+		.idx_data_size = sizeof(uint16_t) * index_count
+	};
 }
 
 void sceneUnloadResources(scene_t* scene) {
 	shaderLoaderDestroy(scene->shaders);
+	heapFree(scene->heap, scene->sphere_indices);
+	heapFree(scene->heap, scene->sphere_vertices);
 }
 
 void sceneSpawnCamera(scene_t* scene) {
@@ -726,15 +868,29 @@ static bool sceneGetPointerRay(scene_t* scene, const camera_component_t* camera,
 	return true;
 }
 
-/* The visible object under the ray, or NULL; particle and distance are set. */
+/* The nearest visible object under the ray, or NULL. distance is set; particle
+   is set for soft bodies and left as UINT32_MAX for spheres. */
 static scene_object_t* scenePickObject(scene_t* scene, vec3f_t origin, vec3f_t direction,
 	physics_particle_id_t* particle, float* distance) {
-	if (!physicsPickParticle(sceneGetPhysics(scene), origin, direction, particle, distance)) {
-		return NULL;
+	physics_t* physics = sceneGetPhysics(scene);
+	float particle_distance = FLT_MAX;
+	float collider_distance = FLT_MAX;
+	int collider = -1;
+	if (!physicsPickParticle(physics, origin, direction, particle, &particle_distance)) {
+		particle_distance = FLT_MAX;
 	}
+	if (!physicsPickSphereCollider(physics, origin, direction, &collider, &collider_distance)) {
+		collider_distance = FLT_MAX;
+	}
+	if (particle_distance == FLT_MAX && collider_distance == FLT_MAX) return NULL;
+	const bool sphere_first = collider_distance < particle_distance;
+	*distance = sphere_first ? collider_distance : particle_distance;
+	if (sphere_first) *particle = UINT32_MAX;
 	for (int i = 0; i < scene->object_count; ++i) {
 		scene_object_t* object = &scene->objects[i];
-		if (!object->hidden && *particle >= object->first_particle &&
+		if (object->hidden) continue;
+		if (sphere_first ? object->collider == collider && object->kind == SCENE_OBJECT_SPHERE :
+			*particle >= object->first_particle &&
 			*particle < object->first_particle + (physics_particle_id_t)object->particle_count) {
 			return object;
 		}
@@ -803,6 +959,11 @@ void sceneUpdateInteraction(scene_t* scene) {
 		scene->move_last_point = point;
 		physicsTranslateParticles(physics, object->first_particle, object->particle_count, offset);
 		sceneObjectSetPosition(object, vec3fAdd(sceneObjectPosition(object), offset));
+		if (object->collider >= 0) {
+			physicsSetSphereCollider(physics, object->collider, object->sphere.center,
+				object->sphere.radius);
+			sceneObjectUpdateModel(scene, object);
+		}
 		if (object->id == scene->selected_id) scene->selected_revision++;
 		return;
 	}
@@ -813,7 +974,7 @@ void sceneUpdateInteraction(scene_t* scene) {
 		physics_particle_id_t particle;
 		float distance;
 		scene_object_t* object = scenePickObject(scene, origin, direction, &particle, &distance);
-		if (object) {
+		if (object && object->kind != SCENE_OBJECT_SPHERE) {
 			scene->grab_distance = distance;
 			physicsGrab(physics, particle, vec3fAdd(origin, vec3fScale(direction, distance)),
 				SCENE_GRAB_RADIUS);
@@ -846,7 +1007,8 @@ static void scenePublishView(scene_t* scene, ui_t* ui) {
 		if (object->hidden) continue;
 		ui_object_t* entry = &view.objects[view.object_count++];
 		entry->id = object->id;
-		entry->kind = object->kind == SCENE_OBJECT_BALL ? UI_OBJECT_BALL : UI_OBJECT_CLOTH;
+		entry->kind = object->kind == SCENE_OBJECT_BALL ? UI_OBJECT_BALL :
+			object->kind == SCENE_OBJECT_CLOTH ? UI_OBJECT_CLOTH : UI_OBJECT_SPHERE;
 		strcpy_s(entry->name, sizeof(entry->name), object->name);
 		entry->transient = object->transient;
 	}
@@ -966,6 +1128,7 @@ ecs_entity_t sceneSpawnModel(scene_t* scene, const char* name_text,
 	memset(model, 0, sizeof(*model));
 	model->mesh_info = mesh;
 	model->shader_info = shaderLoaderGetFlat(scene->shaders);
+	model->tint[0] = model->tint[1] = model->tint[2] = 1.0f;
 	strcpy_s(name->name, sizeof(name->name), name_text);
 	return entity;
 }
@@ -1003,9 +1166,9 @@ void sceneDrawModels(scene_t* scene) {
 			data.light_color_ambient[2] = 3.6f;
 			data.light_color_ambient[3] = 0.045f;
 			/* The selected object is drawn brighter and warmer. */
-			data.material[0] = highlighted ? 1.6f : 1.0f;
-			data.material[1] = highlighted ? 1.5f : 1.0f;
-			data.material[2] = highlighted ? 1.1f : 1.0f;
+			data.material[0] = model->tint[0] * (highlighted ? 1.6f : 1.0f);
+			data.material[1] = model->tint[1] * (highlighted ? 1.5f : 1.0f);
+			data.material[2] = model->tint[2] * (highlighted ? 1.1f : 1.0f);
 			data.material[3] = 1.0f;
 			gpu_uniform_buffer_info_t uniform = {.data=&data, .size=sizeof(data)};
 			rendererModelAdd(scene->render, &entity, model->mesh_info, model->shader_info, &uniform);

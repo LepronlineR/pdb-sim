@@ -76,7 +76,10 @@ cloth_t* clothCreate(heap_t* heap, physics_t* physics, const cloth_info_t* info)
 	if (!clothCanCreate(physics, info)) return NULL;
 	const int n = clothResolution(info);
 	const int vertex_count = n * n;
-	const int index_count = (n - 1) * (n - 1) * 6 * 2;
+	const int front_index_count = (n - 1) * (n - 1) * 6;
+	/* Front sheet, back sheet, and a rim along the 4 (n - 1) border edges that
+	   closes the gap between them: one quad per edge, drawn from both sides. */
+	const int index_count = front_index_count * 2 + 4 * (n - 1) * 12;
 
 	cloth_t* cloth = heapAlloc(heap, sizeof(*cloth), 8);
 	memset(cloth, 0, sizeof(*cloth));
@@ -133,9 +136,8 @@ cloth_t* clothCreate(heap_t* heap, physics_t* physics, const cloth_info_t* info)
 	physicsSetSoftBodyDrag(physics, soft_body, info->drag);
 
 	/* Front faces are wound so they face +y while flat. All front faces come
-	   first: clothUpdateMesh builds normals from that first half only. The back
-	   copy reverses the winding and uses the second half of the vertices. */
-	const int front_index_count = index_count / 2;
+	   first: clothUpdateMesh builds normals from them only. The back copy
+	   reverses the winding and uses the second half of the vertices. */
 	int index = 0;
 	for (int z = 0; z + 1 < n; ++z) {
 		for (int x = 0; x + 1 < n; ++x) {
@@ -152,6 +154,25 @@ cloth_t* clothCreate(heap_t* heap, physics_t* physics, const cloth_info_t* info)
 		cloth->indices[index++] = (uint16_t)(vertex_count + cloth->indices[i + 2]);
 		cloth->indices[index++] = (uint16_t)(vertex_count + cloth->indices[i + 1]);
 	}
+	/* The sheets sit one particle radius either side of the particles, so seen
+	   edge-on there is a gap between them; the rim closes it. Walk the border
+	   and join each edge's front and back vertices with a two-sided quad. */
+	for (int side = 0; side < 4; ++side) {
+		for (int k = 0; k + 1 < n; ++k) {
+			int from, to;
+			switch (side) {
+				case 0: from = k; to = k + 1; break;                                   // z = 0
+				case 1: from = k * n + (n - 1); to = (k + 1) * n + (n - 1); break;     // x = n - 1
+				case 2: from = (n - 1) * n + k; to = (n - 1) * n + k + 1; break;       // z = n - 1
+				default: from = k * n; to = (k + 1) * n; break;                       // x = 0
+			}
+			const uint16_t fa = (uint16_t)from, fb = (uint16_t)to;
+			const uint16_t ba = (uint16_t)(vertex_count + from), bb = (uint16_t)(vertex_count + to);
+			const uint16_t quad[12] = { fa, fb, bb, fa, bb, ba, fa, bb, fb, fa, ba, bb };
+			for (int q = 0; q < 12; ++q) cloth->indices[index++] = quad[q];
+		}
+	}
+	assert(index == index_count);
 	/* A two-tone check every few particles makes folds and sag readable. */
 	const int check = __max(1, n / 8);
 	for (int z = 0; z < n; ++z) {

@@ -13,7 +13,8 @@ This system includes various game engine support for ease of usability.
 ## What it simulates
 
 - **Soft balls**: closed particle shells held by stretch and bending springs plus a volume constraint, so they squash and bounce but keep their volume.
-- **Cloth**: square sheets with stretch, shear and bending constraints, self-collision and double-sided rendering. Sheets can hang free, be pinned at the corners, along one edge (a banner) or around the whole border (a trampoline).
+- **Cloth**: square sheets with stretch, shear and bending constraints, self-collision and double-sided rendering with a closed rim. Sheets can fall free, be pinned at the corners, along one edge (a banner) or around the whole border (a trampoline).
+- **Solid spheres**: static, smooth sphere colliders (not soft bodies) for cloth to fall onto and drape over.
 - **Contacts**: one XPBD contact model for particle-particle and particle-ground contact, with static and dynamic friction, restitution and rolling resistance.
 
 The solver follows Macklin et al., "Small Steps in Physics Simulation" (2019) and "Detailed Rigid Body Simulation with Extended Position Based Dynamics" (2020): each frame is split into substeps, contacts are found once per frame with a spatial hash and solved every substep, and a velocity pass applies friction and restitution. Damping removes only deformation, so falling, rolling and spinning are preserved.
@@ -22,7 +23,7 @@ The solver follows Macklin et al., "Small Steps in Physics Simulation" (2019) an
 
 The app works like a game-engine scene editor. It starts with an empty scene in **Edit** mode, where nothing simulates:
 
-- **Hierarchy** (left): add a ball or a cloth, load the demo scene, clear the scene, and pick objects from the list.
+- **Hierarchy** (left): add a ball, a cloth or a solid sphere, load the trampoline or drape demo, clear the scene, and pick objects from the list.
 - **Inspector** (right): edit the selected object's position, colour, mass, size and solver settings. Each change rebuilds that object.
 - **Simulation** (top): Play, Pause, Step and Stop, plus timings and the solver settings.
 

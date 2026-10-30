@@ -32,6 +32,7 @@ enum {
 	PHYSICS_MAX_SOFT_BODIES = 32,
 	PHYSICS_MAX_VOLUME_INDICES = 1536,
 	PHYSICS_MAX_GRABBED_PARTICLES = 96,
+	PHYSICS_MAX_COLLIDERS = 32,
 	PHYSICS_MAX_CONTACTS = 131072,
 	PHYSICS_GRID_TABLE_SIZE = 16384, /* power of two, >= 2 * PHYSICS_MAX_PARTICLES */
 	PHYSICS_MAX_WORKERS = 8,
@@ -41,6 +42,9 @@ enum {
 };
 
 #define PHYSICS_GROUND (-1)
+/* Contacts with fixed geometry use negative ids for particle_b: the ground, or
+   sphere collider k as PHYSICS_COLLIDER(k). */
+#define PHYSICS_COLLIDER(k) (-2 - (k))
 /* Softness of the mouse attachment: low enough to drag firmly, high enough that
    a fast flick does not inject a huge impulse. */
 #define PHYSICS_GRAB_COMPLIANCE 1.0e-5f
@@ -84,8 +88,9 @@ typedef struct physics_soft_body_t {
 	float volume_lambda;
 } physics_soft_body_t;
 
-/* A non-penetration constraint between two particles, or a particle and the
-   ground plane when particle_b is PHYSICS_GROUND. The normal points from b to a. */
+/* A non-penetration constraint between two particles, or between a particle and
+   fixed geometry (the ground plane or a sphere collider) when particle_b is
+   negative. The normal points from b to a. */
 typedef struct physics_contact_t {
 	int particle_a;
 	int particle_b;
@@ -93,6 +98,13 @@ typedef struct physics_contact_t {
 	float lambda;
 	float normal_speed_before;
 } physics_contact_t;
+
+/* A static, perfectly smooth sphere that particles collide with: the solid
+   shape for cloth to drape over. */
+typedef struct physics_sphere_collider_t {
+	vec3f_t center;
+	float radius;
+} physics_sphere_collider_t;
 
 typedef struct physics_t {
 	heap_t* heap;
@@ -139,6 +151,8 @@ typedef struct physics_t {
 	float gravity;
 	float ground_height;
 	float ground_compliance;
+	physics_sphere_collider_t colliders[PHYSICS_MAX_COLLIDERS];
+	int collider_count;
 	float static_friction;
 	float dynamic_friction;
 	float restitution;
@@ -504,11 +518,18 @@ static void physicsDetectContacts(physics_t* physics, float delta_seconds) {
 		max_travel = __max(max_travel, travel[i]);
 	}
 
-	/* The ground needs no grid. */
+	/* Fixed geometry needs no grid: there is little of it. */
 	for (int i = 0; i < count; ++i) {
 		if (inverse_masses[i] == 0.0f) continue;
 		if (positions[i].y - radii[i] - physics->ground_height < travel[i]) {
 			physicsAddContact(physics, i, PHYSICS_GROUND);
+		}
+		for (int k = 0; k < physics->collider_count; ++k) {
+			const physics_sphere_collider_t* collider = &physics->colliders[k];
+			const float reach = collider->radius + radii[i] + travel[i];
+			if (vec3fMagnitudeSqrd(vec3fSub(positions[i], collider->center)) < reach * reach) {
+				physicsAddContact(physics, i, PHYSICS_COLLIDER(k));
+			}
 		}
 	}
 
@@ -620,6 +641,22 @@ static void physicsDetectContacts(physics_t* physics, float delta_seconds) {
 	}
 }
 
+/* Signed gap between particle a and fixed geometry b (ground or collider), with
+   the surface normal there. */
+static void physicsFixedContact(physics_t* physics, int b, vec3f_t position, float radius,
+	vec3f_t* normal, float* gap) {
+	if (b == PHYSICS_GROUND) {
+		*normal = vec3fY();
+		*gap = position.y - radius - physics->ground_height;
+		return;
+	}
+	const physics_sphere_collider_t* collider = &physics->colliders[-2 - b];
+	const vec3f_t delta = vec3fSub(position, collider->center);
+	const float distance = vec3fMagnitude(delta);
+	*normal = distance > 1.0e-6f ? vec3fScale(delta, 1.0f / distance) : vec3fY();
+	*gap = distance - collider->radius - radius;
+}
+
 /* XPBD inequality constraint C = distance - (r_a + r_b) >= 0, plus static friction
    at the position level: if the tangential slip this substep could be held by
    the normal force, it is undone. */
@@ -631,16 +668,16 @@ static void physicsSolveContacts(physics_t* physics, float inverse_dt_squared) {
 		physics_contact_t* contact = &physics->contacts[c];
 		const int a = contact->particle_a;
 		const int b = contact->particle_b;
-		const bool ground = b == PHYSICS_GROUND;
+		const bool fixed = b < 0;
 		const float inverse_mass_a = physics->inverse_masses[a];
-		const float inverse_mass_b = ground ? 0.0f : physics->inverse_masses[b];
+		const float inverse_mass_b = fixed ? 0.0f : physics->inverse_masses[b];
 		const float inverse_mass_sum = inverse_mass_a + inverse_mass_b;
 		if (inverse_mass_sum == 0.0f) continue;
 
 		vec3f_t normal;
 		float constraint_value;
 		float compliance;
-		if (!ground) {
+		if (!fixed) {
 			vec3f_t delta = vec3fSub(positions[a], positions[b]);
 			const float distance_squared = vec3fMagnitudeSqrd(delta);
 			const float minimum_distance = physics->radii[a] + physics->radii[b];
@@ -651,16 +688,16 @@ static void physicsSolveContacts(physics_t* physics, float inverse_dt_squared) {
 			compliance = 0.0f;
 		}
 		else {
-			normal = vec3fY();
-			constraint_value = positions[a].y - physics->radii[a] - physics->ground_height;
+			physicsFixedContact(physics, b, positions[a], physics->radii[a], &normal,
+				&constraint_value);
 			if (constraint_value >= 0.0f) continue;
-			compliance = physics->ground_compliance;
+			compliance = b == PHYSICS_GROUND ? physics->ground_compliance : 0.0f;
 		}
 
 		/* Velocities still hold the predicted values during the position solve,
 		   so this is the approach speed restitution is measured against. */
 		if (contact->lambda == 0.0f) {
-			vec3f_t relative_velocity = ground ? velocities[a] :
+			vec3f_t relative_velocity = fixed ? velocities[a] :
 				vec3fSub(velocities[a], velocities[b]);
 			contact->normal_speed_before = vec3fDot(relative_velocity, normal);
 		}
@@ -671,12 +708,12 @@ static void physicsSolveContacts(physics_t* physics, float inverse_dt_squared) {
 		contact->lambda += delta_lambda;
 		contact->normal = normal;
 		positions[a] = vec3fAdd(positions[a], vec3fScale(normal, delta_lambda * inverse_mass_a));
-		if (!ground) {
+		if (!fixed) {
 			positions[b] = vec3fSub(positions[b], vec3fScale(normal, delta_lambda * inverse_mass_b));
 		}
 
 		vec3f_t slip = vec3fSub(positions[a], previous_positions[a]);
-		if (!ground) {
+		if (!fixed) {
 			slip = vec3fSub(slip, vec3fSub(positions[b], previous_positions[b]));
 		}
 		const vec3f_t tangential_slip = vec3fSub(slip,
@@ -685,7 +722,7 @@ static void physicsSolveContacts(physics_t* physics, float inverse_dt_squared) {
 		if (tangential_lambda < physics->static_friction * contact->lambda) {
 			const vec3f_t correction = vec3fScale(tangential_slip, 1.0f / inverse_mass_sum);
 			positions[a] = vec3fSub(positions[a], vec3fScale(correction, inverse_mass_a));
-			if (!ground) {
+			if (!fixed) {
 				positions[b] = vec3fAdd(positions[b], vec3fScale(correction, inverse_mass_b));
 			}
 		}
@@ -704,18 +741,18 @@ static void physicsSolveContactVelocities(physics_t* physics, float delta_second
 		if (contact->lambda <= 0.0f) continue;
 		const int a = contact->particle_a;
 		const int b = contact->particle_b;
-		const bool ground = b == PHYSICS_GROUND;
+		const bool fixed = b < 0;
 		if (physics->particle_owner[a] >= 0) physics->soft_bodies[physics->particle_owner[a]].touching = true;
-		if (!ground && physics->particle_owner[b] >= 0) {
+		if (!fixed && physics->particle_owner[b] >= 0) {
 			physics->soft_bodies[physics->particle_owner[b]].touching = true;
 		}
 		const float inverse_mass_a = physics->inverse_masses[a];
-		const float inverse_mass_b = ground ? 0.0f : physics->inverse_masses[b];
+		const float inverse_mass_b = fixed ? 0.0f : physics->inverse_masses[b];
 		const float inverse_mass_sum = inverse_mass_a + inverse_mass_b;
 		if (inverse_mass_sum == 0.0f) continue;
 
 		const vec3f_t normal = contact->normal;
-		const vec3f_t relative_velocity = ground ? velocities[a] :
+		const vec3f_t relative_velocity = fixed ? velocities[a] :
 			vec3fSub(velocities[a], velocities[b]);
 		const float normal_speed = vec3fDot(relative_velocity, normal);
 		const vec3f_t tangential_velocity = vec3fSub(relative_velocity,
@@ -738,7 +775,7 @@ static void physicsSolveContactVelocities(physics_t* physics, float delta_second
 
 		const vec3f_t impulse = vec3fScale(velocity_change, 1.0f / inverse_mass_sum);
 		velocities[a] = vec3fAdd(velocities[a], vec3fScale(impulse, inverse_mass_a));
-		if (!ground) {
+		if (!fixed) {
 			velocities[b] = vec3fSub(velocities[b], vec3fScale(impulse, inverse_mass_b));
 		}
 	}
@@ -1135,6 +1172,41 @@ void physicsReleaseGrab(physics_t* physics) {
 
 bool physicsIsGrabbing(physics_t* physics) {
 	return physics->grabbed_count > 0;
+}
+
+int physicsAddSphereCollider(physics_t* physics, vec3f_t center, float radius) {
+	assert(physics->collider_count < PHYSICS_MAX_COLLIDERS);
+	if (physics->collider_count >= PHYSICS_MAX_COLLIDERS) return -1;
+	const int index = physics->collider_count++;
+	physics->colliders[index].center = center;
+	physics->colliders[index].radius = __max(0.0f, radius);
+	return index;
+}
+
+void physicsSetSphereCollider(physics_t* physics, int collider, vec3f_t center, float radius) {
+	physics->colliders[collider].center = center;
+	physics->colliders[collider].radius = __max(0.0f, radius);
+}
+
+bool physicsPickSphereCollider(physics_t* physics, vec3f_t origin, vec3f_t direction,
+	int* collider, float* distance) {
+	direction = vec3fNorm(direction);
+	float best = FLT_MAX;
+	for (int k = 0; k < physics->collider_count; ++k) {
+		const vec3f_t to_center = vec3fSub(physics->colliders[k].center, origin);
+		const float along = vec3fDot(to_center, direction);
+		const float off_squared = vec3fMagnitudeSqrd(to_center) - along * along;
+		const float radius_squared = physics->colliders[k].radius * physics->colliders[k].radius;
+		if (off_squared > radius_squared) continue;
+		const float hit = along - sqrtf(radius_squared - off_squared);
+		if (hit > 0.0f && hit < best) {
+			best = hit;
+			*collider = k;
+		}
+	}
+	if (best == FLT_MAX) return false;
+	*distance = best;
+	return true;
 }
 
 void physicsSetGroundHeight(physics_t* physics, float height) {

@@ -27,11 +27,9 @@ typedef struct camera_component_t {
 } camera_component_t;
 
 typedef struct model_component_t {
-	gpu_mesh_info_t* mesh_info;
+	gpu_mesh_info_t* mesh_info;  // NULL: not drawn
 	gpu_shader_info_t* shader_info;
-	void* owned_resource;
-	void (*update_resource)(void* resource);
-	void (*destroy_resource)(void* resource);
+	float tint[3];               // multiplies the mesh's vertex colors
 } model_component_t;
 
 typedef struct physics_world_component_t {

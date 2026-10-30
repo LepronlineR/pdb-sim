@@ -485,8 +485,41 @@ static void testPhysicsGrab(heap_t* heap) {
 	physicsDestroy(scene.physics);
 }
 
+/* A free cloth falls onto a static sphere collider: it must rest on top without
+   any particle inside the sphere, and drape down around it. */
+static void testPhysicsClothDrapesOverSphere(heap_t* heap) {
+	physics_test_scene_t scene = { .heap = heap, .physics = physicsCreate(heap) };
+	const vec3f_t center = { 0, 1.2f, 0 };
+	const float sphere_radius = 1.2f;
+	physicsAddSphereCollider(scene.physics, center, sphere_radius);
+	cloth_info_t cloth = clothInfoDefault((vec3f_t){ 0, 3.5f, 0 }, vec3fOne());
+	cloth.size = 3.0f;
+	cloth.pin = CLOTH_PIN_NONE;
+	testSceneAddCloth(&scene, cloth);
+	testSceneRun(&scene, 360);
+	float deepest = 0.0f, top = -FLT_MAX, lowest = FLT_MAX;
+	int nan = 0;
+	for (int i = 0; i < scene.count[0]; ++i) {
+		const physics_particle_id_t particle = scene.first[0] + i;
+		const vec3f_t p = physicsGetParticlePosition(scene.physics, particle);
+		if (isnan(p.x) || isnan(p.y) || isnan(p.z)) ++nan;
+		const float gap = vec3fDistance(p, center) - sphere_radius -
+			physicsGetParticleRadius(scene.physics, particle);
+		deepest = fminf(deepest, gap);
+		top = fmaxf(top, p.y);
+		lowest = fminf(lowest, p.y);
+	}
+	char detail[128];
+	sprintf_s(detail, sizeof(detail), "deepest penetration %.3f m, top %.2f m, lowest %.2f m, nan=%d",
+		-deepest, top, lowest, nan);
+	testCheck(nan == 0 && deepest > -0.02f && top > 2.3f && top < 2.7f && lowest < 1.5f,
+		"cloth drapes over a solid sphere", detail);
+	physicsDestroy(scene.physics);
+}
+
 int testPhysics(heap_t* heap) {
 	test_failures = 0;
+	testPhysicsClothDrapesOverSphere(heap);
 	testPhysicsPile(heap);
 	testPhysicsSpin(heap);
 	testPhysicsRollingStops(heap);
