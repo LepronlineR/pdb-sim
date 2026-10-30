@@ -9,6 +9,7 @@
 #define BALL_TRIANGLE_COUNT 512
 #define BALL_INDEX_COUNT (BALL_TRIANGLE_COUNT * 3)
 #define BALL_MAX_EDGES 768
+#define BALL_RADIUS_SLACK 1.1f
 
 typedef struct ball_t {
 	heap_t* heap;
@@ -46,14 +47,15 @@ ball_t* ballCreate(heap_t* heap, physics_t* physics, const ball_info_t* info) {
 	ballBuildMesh(ball, info->color);
 
 	const float particle_mass = info->mass / (float)BALL_VERTEX_COUNT;
-	const float particle_radius = info->radius * 0.015f;
-	const float collision_radius = info->radius * 0.08f;
+	/* A particle resting in a surface triangle sits at its circumcenter, so the
+	   surface is closed to equal particles when 2r covers the largest
+	   circumradius. The slack keeps it closed while the surface stretches. */
+	const float particle_radius = info->radius * ballGetMaxCircumradius(ball) * 0.5f *
+		BALL_RADIUS_SLACK;
 	for (int i = 0; i < BALL_VERTEX_COUNT; ++i) {
 		vec3f_t local = vec3fScale(ball->vertices[i * 3], info->radius);
 		vec3f_t position = vec3fAdd(info->position, local);
-		ball->particles[i] = physicsAddBox(physics, position,
-			(vec3f_t){ particle_radius, particle_radius, particle_radius }, particle_mass, 0.0f);
-		physicsSetBodyCollisionRadius(ball->particles[i], collision_radius);
+		ball->particles[i] = physicsAddParticle(physics, position, particle_radius, particle_mass);
 		ball->vertices[i * 3] = position;
 	}
 	ballUpdateMesh(ball);
@@ -81,6 +83,23 @@ void ballUpdateMesh(ball_t* ball) {
 		ball->vertices[i * 3] = position;
 		ball->vertices[i * 3 + 1] = vec3fNorm(vec3fSub(position, center));
 	}
+}
+
+float ballGetMaxCircumradius(ball_t* ball) {
+	float max_radius = 0.0f;
+	for (int i = 0; i < BALL_INDEX_COUNT; i += 3) {
+		vec3f_t a = ball->vertices[ball->indices[i] * 3];
+		vec3f_t b = ball->vertices[ball->indices[i + 1] * 3];
+		vec3f_t c = ball->vertices[ball->indices[i + 2] * 3];
+		const float ab = vec3fDistance(a, b);
+		const float bc = vec3fDistance(b, c);
+		const float ca = vec3fDistance(c, a);
+		const float twice_area = vec3fMagnitude(vec3fCross(vec3fSub(b, a), vec3fSub(c, a)));
+		if (twice_area > 0.0f) {
+			max_radius = __max(max_radius, ab * bc * ca / (2.0f * twice_area));
+		}
+	}
+	return max_radius;
 }
 
 gpu_mesh_info_t* ballGetMesh(ball_t* ball) {
