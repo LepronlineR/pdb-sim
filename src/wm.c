@@ -20,6 +20,7 @@ typedef struct wm_window_t {
 	int last_mouse_x;
 	int last_mouse_y;
 	bool has_mouse_position;
+	int mouse_wheel;
 	bool cursor_captured;
 	wm_message_callback_t message_callback;
 	void* message_user_data;
@@ -82,12 +83,12 @@ LRESULT CALLBACK wmWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
 			case WM_RBUTTONDOWN:
 				win->mouse_mask |= k_mouse_button_right; break;
 			case WM_RBUTTONUP:
-				win->mouse_mask |= k_mouse_button_right; break;
+				win->mouse_mask &= ~k_mouse_button_right; break;
 			// M MOUSE BUTTON
 			case WM_MBUTTONDOWN:
 				win->mouse_mask |= k_mouse_button_middle; break;
 			case WM_MBUTTONUP:
-				win->mouse_mask |= k_mouse_button_middle; break;
+				win->mouse_mask &= ~k_mouse_button_middle; break;
 			// MOVE MOUSE
 			case WM_MOUSEMOVE:
 				if (win->focused && win->cursor_captured) { // get relative mouse position
@@ -116,6 +117,9 @@ LRESULT CALLBACK wmWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
 					win->last_mouse_y = mouse_y;
 					win->has_mouse_position = true;
 				}
+				break;
+			case WM_MOUSEWHEEL:
+				if (!message_handled) win->mouse_wheel += GET_WHEEL_DELTA_WPARAM(wParam);
 				break;
 			case WM_ACTIVATEAPP:
 				ShowCursor(!wParam || !win->cursor_captured);
@@ -165,6 +169,7 @@ wm_window_t* wmCreateWindow(heap_t* heap) {
 	win->hwnd = hwnd;
 	win->key_mask = 0;
 	win->mouse_mask = 0;
+	win->mouse_wheel = 0;
 	win->mouse_x = 0;
 	win->mouse_y = 0;
 	win->last_mouse_x = 0;
@@ -193,6 +198,7 @@ void wmDestroyWindow(wm_window_t* window) {
 bool wmPumpWindow(wm_window_t* window) {
 	window->mouse_x = 0;
 	window->mouse_y = 0;
+	window->mouse_wheel = 0;
 	MSG msg = { 0 };
 	while (PeekMessage(&msg, window->hwnd, 0, 0, PM_REMOVE)) {
 		TranslateMessage(&msg);
@@ -212,6 +218,24 @@ uint32_t wmGetKeyMask(wm_window_t* window) {
 void wmGetMouseLoc(wm_window_t* window, int* x, int* y) {
 	*x = window->mouse_x;
 	*y = window->mouse_y;
+}
+
+bool wmGetCursorClientPos(wm_window_t* window, int* x, int* y, int* width, int* height) {
+	POINT cursor;
+	RECT client;
+	if (!GetCursorPos(&cursor) || !ScreenToClient(window->hwnd, &cursor) ||
+		!GetClientRect(window->hwnd, &client)) {
+		return false;
+	}
+	*x = cursor.x;
+	*y = cursor.y;
+	*width = client.right - client.left;
+	*height = client.bottom - client.top;
+	return *width > 0 && *height > 0;
+}
+
+int wmGetMouseWheel(wm_window_t* window) {
+	return window->mouse_wheel;
 }
 
 void* wmGetHWND(wm_window_t* window) {

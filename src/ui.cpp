@@ -9,6 +9,8 @@ extern "C" {
 #include "wm.h"
 }
 
+#include <string.h>
+
 #include "imgui.h"
 #include "backends/imgui_impl_vulkan.h"
 #include "backends/imgui_impl_win32.h"
@@ -22,8 +24,14 @@ struct ui_t {
 	mutex_t* mutex;
 	ImGuiContext* context;
 	ui_ball_info_t ball_info;
+	ui_cloth_info_t cloth_info;
+	ui_sim_settings_t settings;
+	ui_stats_t stats;
 	bool initialized;
 	bool spawn_pending;
+	bool cloth_spawn_pending;
+	bool reset_pending;
+	bool step_pending;
 };
 
 static ui_t* active_ui;
@@ -50,8 +58,33 @@ extern "C" ui_t* uiCreate(heap_t* heap, wm_window_t* window) {
 	ui->ball_info.bending_compliance = 3.0e-3f;
 	ui->ball_info.volume_compliance = 1.0e-8f;
 	ui->ball_info.velocity_retention = 0.30f;
+	ui->cloth_info.position[0] = 0.0f;
+	ui->cloth_info.position[1] = 6.0f;
+	ui->cloth_info.position[2] = 0.0f;
+	ui->cloth_info.color[0] = 0.92f;
+	ui->cloth_info.color[1] = 0.86f;
+	ui->cloth_info.color[2] = 0.70f;
+	ui->cloth_info.resolution = 32;
+	ui->cloth_info.size = 4.0f;
+	ui->cloth_info.mass = 1.0f;
+	ui->cloth_info.stretch_compliance = 1.0e-7f;
+	ui->cloth_info.bend_compliance = 5.0e-2f;
+	ui->cloth_info.velocity_retention = 0.6f;
+	ui->cloth_info.pin = 0;
+	ui->settings.substeps = 8;
+	ui->settings.iterations = 1;
+	ui->settings.gravity = -9.81f;
+	ui->settings.static_friction = 0.6f;
+	ui->settings.dynamic_friction = 0.4f;
+	ui->settings.restitution = 0.2f;
+	ui->settings.rolling_resistance = 0.15f;
+	ui->settings.paused = false;
+	memset(&ui->stats, 0, sizeof(ui->stats));
 	ui->initialized = false;
 	ui->spawn_pending = false;
+	ui->cloth_spawn_pending = false;
+	ui->reset_pending = false;
+	ui->step_pending = false;
 	active_ui = ui;
 	wmSetCursorCaptured(window, false);
 	wmSetMessageCallback(window, uiWindowMessage, ui);
@@ -80,6 +113,74 @@ extern "C" bool uiConsumeBallSpawn(ui_t* ui, ui_ball_info_t* info) {
 	}
 	mutexUnlock(ui->mutex);
 	return pending;
+}
+
+extern "C" bool uiConsumeClothSpawn(ui_t* ui, ui_cloth_info_t* info) {
+	if (!ui || !info) return false;
+	mutexLock(ui->mutex);
+	bool pending = ui->cloth_spawn_pending;
+	if (pending) {
+		*info = ui->cloth_info;
+		ui->cloth_spawn_pending = false;
+	}
+	mutexUnlock(ui->mutex);
+	return pending;
+}
+
+extern "C" bool uiConsumeReset(ui_t* ui) {
+	if (!ui) return false;
+	mutexLock(ui->mutex);
+	bool pending = ui->reset_pending;
+	ui->reset_pending = false;
+	mutexUnlock(ui->mutex);
+	return pending;
+}
+
+extern "C" bool uiConsumeStep(ui_t* ui) {
+	if (!ui) return false;
+	mutexLock(ui->mutex);
+	bool pending = ui->step_pending;
+	ui->step_pending = false;
+	mutexUnlock(ui->mutex);
+	return pending;
+}
+
+extern "C" void uiRequestReset(ui_t* ui) {
+	if (!ui) return;
+	mutexLock(ui->mutex);
+	ui->reset_pending = true;
+	mutexUnlock(ui->mutex);
+}
+
+extern "C" void uiRequestBallSpawn(ui_t* ui) {
+	if (!ui) return;
+	mutexLock(ui->mutex);
+	ui->spawn_pending = true;
+	mutexUnlock(ui->mutex);
+}
+
+extern "C" void uiRequestClothSpawn(ui_t* ui) {
+	if (!ui) return;
+	mutexLock(ui->mutex);
+	ui->cloth_spawn_pending = true;
+	mutexUnlock(ui->mutex);
+}
+
+extern "C" ui_sim_settings_t uiGetSimSettings(ui_t* ui) {
+	if (!ui) {
+		return ui_sim_settings_t{ 8, 1, -9.81f, 0.6f, 0.4f, 0.2f, 0.15f, false };
+	}
+	mutexLock(ui->mutex);
+	ui_sim_settings_t settings = ui->settings;
+	mutexUnlock(ui->mutex);
+	return settings;
+}
+
+extern "C" void uiSetStats(ui_t* ui, const ui_stats_t* stats) {
+	if (!ui || !stats) return;
+	mutexLock(ui->mutex);
+	ui->stats = *stats;
+	mutexUnlock(ui->mutex);
 }
 
 extern "C" bool uiWantsMouse(ui_t* ui) {
@@ -162,9 +263,34 @@ extern "C" void uiRendererDraw(ui_t* ui, gpu_t* gpu,
 	ImGui::NewFrame();
 
 	ImGui::SetNextWindowPos(ImVec2(16.0f, 16.0f), ImGuiCond_FirstUseEver);
-	ImGui::SetNextWindowSize(ImVec2(440.0f, 520.0f), ImGuiCond_FirstUseEver);
+	ImGui::SetNextWindowSize(ImVec2(440.0f, 700.0f), ImGuiCond_FirstUseEver);
 	ImGui::Begin("XPBD Simulation");
-	ImGui::Text("FPS: %.1f", ImGui::GetIO().Framerate);
+	ImGui::Text("FPS: %.1f   physics: %.2f ms", ImGui::GetIO().Framerate,
+		ui->stats.physics_ms);
+	ImGui::Text("%d particles, %d constraints, %d bodies, %d contacts",
+		ui->stats.particle_count, ui->stats.constraint_count, ui->stats.soft_body_count,
+		ui->stats.contact_count);
+	if (ui->stats.dropped_ms > 0.0f)
+		ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f),
+			"Physics fell behind: %.0f ms of simulation dropped", ui->stats.dropped_ms);
+	ImGui::TextDisabled("Left-drag: orbit   Right-drag: grab   Wheel: zoom");
+
+	ImGui::SeparatorText("Simulation");
+	ImGui::Checkbox("Paused", &ui->settings.paused);
+	ImGui::SameLine();
+	ImGui::BeginDisabled(!ui->settings.paused);
+	if (ImGui::Button("Step")) ui->step_pending = true;
+	ImGui::EndDisabled();
+	ImGui::SameLine();
+	if (ImGui::Button("Reset scene")) ui->reset_pending = true;
+	ImGui::SliderInt("Substeps", &ui->settings.substeps, 1, 32);
+	ImGui::SliderInt("Iterations", &ui->settings.iterations, 1, 8);
+	ImGui::SliderFloat("Gravity", &ui->settings.gravity, -30.0f, 0.0f, "%.2f m/s^2");
+	ImGui::SliderFloat("Static friction", &ui->settings.static_friction, 0.0f, 1.5f, "%.2f");
+	ImGui::SliderFloat("Dynamic friction", &ui->settings.dynamic_friction, 0.0f, 1.5f, "%.2f");
+	ImGui::SliderFloat("Restitution", &ui->settings.restitution, 0.0f, 1.0f, "%.2f");
+	ImGui::SliderFloat("Rolling resistance", &ui->settings.rolling_resistance, 0.0f, 0.5f, "%.2f");
+
 	ImGui::SeparatorText("Spawn Ball");
 	ImGui::InputFloat3("Position", ui->ball_info.position);
 	ImGui::ColorEdit3("Color", ui->ball_info.color);
@@ -191,6 +317,32 @@ extern "C" void uiRendererDraw(ui_t* ui, gpu_t* gpu,
 	}
 	if (ui->spawn_pending)
 		ImGui::TextDisabled("Spawn queued for the scene thread...");
+
+	ImGui::SeparatorText("Spawn Cloth");
+	ImGui::PushID("cloth");
+	ImGui::InputFloat3("Position", ui->cloth_info.position);
+	ImGui::ColorEdit3("Color", ui->cloth_info.color);
+	ImGui::SliderInt("Resolution", &ui->cloth_info.resolution, 4, 64);
+	ImGui::DragFloat("Size", &ui->cloth_info.size, 0.05f, 0.5f, 10.0f, "%.2f m");
+	ImGui::DragFloat("Mass", &ui->cloth_info.mass, 0.05f, 0.01f, 50.0f, "%.2f kg");
+	ImGui::InputFloat("Stretch compliance", &ui->cloth_info.stretch_compliance,
+		1.0e-8f, 1.0e-7f, "%.3e");
+	ImGui::InputFloat("Bend compliance", &ui->cloth_info.bend_compliance,
+		1.0e-4f, 1.0e-3f, "%.3e");
+	ImGui::SliderFloat("Velocity retention", &ui->cloth_info.velocity_retention,
+		0.0f, 1.0f, "%.2f");
+	static const char* pin_names[] = { "None (falls)", "Four corners", "One edge", "Whole border" };
+	ImGui::Combo("Pinned", &ui->cloth_info.pin, pin_names, IM_ARRAYSIZE(pin_names));
+	if (ImGui::Button("Spawn cloth", ImVec2(-1.0f, 0.0f))) {
+		ui->cloth_info.size = ui->cloth_info.size < 0.5f ? 0.5f : ui->cloth_info.size;
+		ui->cloth_info.mass = ui->cloth_info.mass < 0.01f ? 0.01f : ui->cloth_info.mass;
+		ui->cloth_info.stretch_compliance = ui->cloth_info.stretch_compliance < 0.0f ?
+			0.0f : ui->cloth_info.stretch_compliance;
+		ui->cloth_info.bend_compliance = ui->cloth_info.bend_compliance < 0.0f ?
+			0.0f : ui->cloth_info.bend_compliance;
+		ui->cloth_spawn_pending = true;
+	}
+	ImGui::PopID();
 	ImGui::End();
 
 	ImGui::Render();

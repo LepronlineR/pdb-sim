@@ -4,6 +4,9 @@
 	<ClCompile Include="ball.c">
 	  <Filter>Source Files\sys</Filter>
 	</ClCompile>
+	<ClCompile Include="cloth.c">
+	  <Filter>Source Files\sys</Filter>
+	</ClCompile>
     <Filter Include="Source Files">
       <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
       <Extensions>cpp;c;cc;cxx;c++;cppm;ixx;def;odl;idl;hpj;bat;asm;asmx</Extensions>
@@ -58,6 +61,9 @@
   </ItemGroup>
   <ItemGroup>
 	<ClInclude Include="ball.h">
+	  <Filter>Header Files\sys</Filter>
+	</ClInclude>
+	<ClInclude Include="cloth.h">
 	  <Filter>Header Files\sys</Filter>
 	</ClInclude>
     <ClCompile Include="main.c">

@@ -3,6 +3,8 @@
 
 // contains all of the default components for basic functionality
 
+#include <stdint.h>
+
 // predef
 typedef struct transform_t transform_t;
 typedef struct mat4f_t mat4f_t;
@@ -38,7 +40,7 @@ typedef struct physics_world_component_t {
 } physics_world_component_t;
 
 typedef struct rigid_body_component_t {
-	struct physics_body_t* body;
+	uint32_t particle; // physics_particle_id_t
 } rigid_body_component_t;
 
 typedef struct model_texture_component_t {

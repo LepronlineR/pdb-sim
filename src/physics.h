@@ -9,16 +9,17 @@
 
 typedef struct physics_t physics_t;
 
-typedef struct physics_body_t {
-	vec3f_t position;
-	vec3f_t previous_position;
-	vec3f_t velocity;
-	float radius;
-	float inverse_mass;
-} physics_body_t;
+// Particles are referred to by id; ids are dense and assigned in creation order,
+// so particles added back to back have consecutive ids.
+typedef uint32_t physics_particle_id_t;
 
-typedef struct physics_distance_constraint_t physics_distance_constraint_t;
-typedef struct physics_volume_constraint_t physics_volume_constraint_t;
+typedef struct physics_stats_t {
+	int particle_count;
+	int distance_constraint_count;
+	int soft_body_count;
+	int contact_count;
+	int grabbed_count;
+} physics_stats_t;
 
 typedef struct heap_t heap_t;
 typedef struct ecs_t ecs_t;
@@ -26,16 +27,48 @@ typedef struct ecs_t ecs_t;
 
 physics_t* physicsCreate(heap_t* heap);
 void physicsDestroy(physics_t* physics);
-// Adds a spherical particle. A mass of zero makes it static.
-physics_body_t* physicsAddParticle(physics_t* physics, vec3f_t position,
+// Adds a spherical particle. A mass of zero makes it static (pinned).
+physics_particle_id_t physicsAddParticle(physics_t* physics, vec3f_t position,
 	float radius, float mass);
-physics_distance_constraint_t* physicsAddDistanceConstraint(physics_t* physics,
-	physics_body_t* body_a, physics_body_t* body_b, float rest_length, float compliance);
-physics_volume_constraint_t* physicsAddVolumeConstraint(physics_t* physics,
-	physics_body_t** bodies, int body_count, const uint16_t* indices,
-	int index_count, float compliance);
+vec3f_t physicsGetParticlePosition(physics_t* physics, physics_particle_id_t particle);
+vec3f_t physicsGetParticleVelocity(physics_t* physics, physics_particle_id_t particle);
+void physicsSetParticleVelocity(physics_t* physics, physics_particle_id_t particle,
+	vec3f_t velocity);
+float physicsGetParticleRadius(physics_t* physics, physics_particle_id_t particle);
+// All particle positions, indexed by id. Valid until the next physicsUpdate.
+const vec3f_t* physicsGetParticlePositions(physics_t* physics);
+void physicsAddDistanceConstraint(physics_t* physics, physics_particle_id_t particle_a,
+	physics_particle_id_t particle_b, float rest_length, float compliance);
+
+// Groups particles [first_particle, first_particle + particle_count) into one soft
+// body: its constraints are solved together, it is damped as a unit, and its
+// particles only collide with each other when self_collision is set (cloth).
+//
+// RETURN: the soft body index
+int physicsAddSoftBody(physics_t* physics, physics_particle_id_t first_particle,
+	int particle_count, bool self_collision);
 // Fraction of deformation velocity kept per 1/60 s. Rigid motion is not damped.
-void physicsSetVolumeDamping(physics_volume_constraint_t* constraint, float retention);
+void physicsSetSoftBodyDamping(physics_t* physics, int soft_body, float retention);
+// Fraction of velocity the soft body loses per second to air resistance.
+void physicsSetSoftBodyDrag(physics_t* physics, int soft_body, float per_second);
+// Keeps the volume enclosed by a closed triangle mesh; indices are relative to
+// the soft body's first particle.
+void physicsSetSoftBodyVolume(physics_t* physics, int soft_body, const uint16_t* indices,
+	int index_count, float compliance);
+
+// Finds the nearest dynamic particle along a ray.
+//
+// RETURN: true if one was hit; particle and its distance along the ray are set
+bool physicsPickParticle(physics_t* physics, vec3f_t origin, vec3f_t direction,
+	physics_particle_id_t* particle, float* distance);
+// Attaches the particle, and those of its soft body within radius of it, to
+// target; they keep their offsets from it while it moves.
+void physicsGrab(physics_t* physics, physics_particle_id_t particle, vec3f_t target,
+	float radius);
+void physicsMoveGrab(physics_t* physics, vec3f_t target);
+void physicsReleaseGrab(physics_t* physics);
+bool physicsIsGrabbing(physics_t* physics);
+
 void physicsSetGroundHeight(physics_t* physics, float height);
 void physicsSetGroundCompliance(physics_t* physics, float compliance);
 void physicsSetGravity(physics_t* physics, float gravity_meters_per_second_squared);
@@ -47,15 +80,14 @@ void physicsSetSolverIterations(physics_t* physics, int iterations);
 void physicsSetFriction(physics_t* physics, float static_coefficient,
 	float dynamic_coefficient);
 void physicsSetRestitution(physics_t* physics, float restitution);
-bool physicsHasCapacity(physics_t* physics, int body_count,
-	int distance_constraint_count, int volume_constraint_count);
+// Rolling resistance coefficient: a body touching something feels a rolling
+// drag of coefficient * weight, so rolling bodies come to rest (rubber ~0.01,
+// soft bodies more).
+void physicsSetRollingResistance(physics_t* physics, float coefficient);
+bool physicsHasCapacity(physics_t* physics, int particle_count,
+	int distance_constraint_count, int soft_body_count);
 void physicsUpdate(physics_t* physics, float delta_seconds);
-void physicsSolveDistanceConstraint(physics_distance_constraint_t* constraint,
-	float inverse_dt_squared);
-void physicsSolveVolumeConstraint(physics_volume_constraint_t* constraint,
-	float inverse_dt_squared);
-float physicsCalculateVolume(physics_volume_constraint_t* constraint);
-int physicsGetContactCount(physics_t* physics);
+physics_stats_t physicsGetStats(physics_t* physics);
 
 
 #endif
