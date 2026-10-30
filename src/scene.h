@@ -74,6 +74,15 @@ int sceneGetGrabbedCount(scene_t* scene);
 //
 // RETURN: false if no object has that id
 bool sceneGetObjectProperties(scene_t* scene, int id, ui_object_properties_t* properties);
+// Client-pixel position of an object's authored position.
+//
+// RETURN: false if there is no such object or it is behind the camera
+bool sceneGetObjectScreenPosition(scene_t* scene, int id, int width, int height, int* x, int* y);
+// Client-pixel position of a move-gizmo handle (axis 0 = X, 1 = Y, 2 = Z) on the
+// selection, for a window of the given size.
+//
+// RETURN: false if the gizmo is not showing
+bool sceneGetGizmoHandle(scene_t* scene, int axis, int width, int height, int* x, int* y);
 // A hash of every particle position, to check that Stop restores the scene.
 uint64_t sceneHashParticles(scene_t* scene);
 

@@ -25,13 +25,19 @@ The app works like a game-engine scene editor. It starts with an empty scene in 
 
 - **Hierarchy** (left): add a ball, a cloth or a solid sphere, load the trampoline or drape demo, clear the scene, and pick objects from the list.
 - **Inspector** (right): edit the selected object's position, colour, mass, size and solver settings. Each change rebuilds that object.
-- **Simulation** (top): Play, Pause, Step and Stop, plus timings and the solver settings.
+- **Simulation** (top): Play, Pause, Step and Stop, the Edit-mode tool, timings and the solver settings.
+
+Edit mode has two tools:
+
+- **Move**: the selected object shows a gizmo with red, green and blue handles. Drag a handle to move the object along X, Y or Z only.
+- **Pin cloth**: click a point on a cloth to pin it in place (click it again to unpin). Pinned points are drawn dark and stay fixed while playing. Pins add to the cloth's pin preset (corners, edge, border); the inspector shows the count and can clear the hand-placed ones.
 
 **Play** starts the simulation from the authored scene. Objects can still be added, grabbed and deleted while playing, but those are runtime changes: **Stop** returns to Edit mode and rebuilds the scene exactly as it was before Play. The inspector is read-only while playing.
 
 | Input | Edit mode | Play mode |
 | --- | --- | --- |
-| Left click | Select the object under the cursor (empty space deselects) | Same |
+| Left click | Select the object under the cursor (empty space deselects); with Pin cloth, pin or unpin a cloth point | Select |
+| Left-drag on a gizmo handle | Move the selection along that axis | — |
 | Right-drag | Move the object under the cursor | Grab and drag it physically |
 | Delete | Delete the selection | Delete it until Stop |
 | Left-drag | Orbit the camera | Same |

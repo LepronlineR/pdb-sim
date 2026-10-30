@@ -8,7 +8,6 @@
 #include <string.h>
 
 #define CLOTH_MIN_RESOLUTION 4
-#define CLOTH_MAX_RESOLUTION 64
 /* Particle radius relative to the spacing. Below 0.5 so neighbours do not touch
    at rest; above half the diagonal gap (0.354) so the cloth cannot pass
    through itself. */
@@ -29,6 +28,10 @@ typedef struct cloth_t {
 
 static int clothResolution(const cloth_info_t* info) {
 	return __max(CLOTH_MIN_RESOLUTION, __min(info->resolution, CLOTH_MAX_RESOLUTION));
+}
+
+int clothInfoResolution(const cloth_info_t* info) {
+	return clothResolution(info);
 }
 
 static int clothConstraintCount(int n) {
@@ -59,7 +62,7 @@ bool clothCanCreate(physics_t* physics, const cloth_info_t* info) {
 	return physicsHasCapacity(physics, n * n, clothConstraintCount(n), 1);
 }
 
-static bool clothIsPinned(cloth_pin_t pin, int n, int x, int z) {
+static bool clothIsPresetPinned(cloth_pin_t pin, int n, int x, int z) {
 	switch (pin) {
 		case CLOTH_PIN_CORNERS:
 			return (x == 0 || x == n - 1) && (z == 0 || z == n - 1);
@@ -70,6 +73,27 @@ static bool clothIsPinned(cloth_pin_t pin, int n, int x, int z) {
 		default:
 			return false;
 	}
+}
+
+bool clothInfoIsPinned(const cloth_info_t* info, int x, int z) {
+	const int n = clothResolution(info);
+	return clothIsPresetPinned(info->pin, n, x, z) || ((info->pin_mask[z] >> x) & 1ull) != 0;
+}
+
+void clothInfoTogglePin(cloth_info_t* info, int x, int z) {
+	if (x < 0 || z < 0 || x >= CLOTH_MAX_RESOLUTION || z >= CLOTH_MAX_RESOLUTION) return;
+	info->pin_mask[z] ^= 1ull << x;
+}
+
+int clothInfoCountPins(const cloth_info_t* info) {
+	const int n = clothResolution(info);
+	int count = 0;
+	for (int z = 0; z < n; ++z) {
+		for (int x = 0; x < n; ++x) {
+			if (clothInfoIsPinned(info, x, z)) ++count;
+		}
+	}
+	return count;
 }
 
 cloth_t* clothCreate(heap_t* heap, physics_t* physics, const cloth_info_t* info) {
@@ -101,7 +125,7 @@ cloth_t* clothCreate(heap_t* heap, physics_t* physics, const cloth_info_t* info)
 			const vec3f_t position = {
 				origin.x + (float)x * spacing, origin.y, origin.z + (float)z * spacing
 			};
-			const float mass = clothIsPinned(info->pin, n, x, z) ? 0.0f : particle_mass;
+			const float mass = clothInfoIsPinned(info, x, z) ? 0.0f : particle_mass;
 			const physics_particle_id_t particle = physicsAddParticle(physics, position,
 				cloth->particle_radius, mass);
 			if (x == 0 && z == 0) cloth->first_particle = particle;
@@ -173,13 +197,16 @@ cloth_t* clothCreate(heap_t* heap, physics_t* physics, const cloth_info_t* info)
 		}
 	}
 	assert(index == index_count);
-	/* A two-tone check every few particles makes folds and sag readable. */
+	/* A two-tone check every few particles makes folds and sag readable; pinned
+	   particles stand out in a dark contrasting color. */
 	const int check = __max(1, n / 8);
+	const vec3f_t pin_color = { 0.08f, 0.08f, 0.10f };
 	for (int z = 0; z < n; ++z) {
 		for (int x = 0; x < n; ++x) {
 			const int i = z * n + x;
 			const float shade = ((x / check + z / check) & 1) ? 0.78f : 1.0f;
-			const vec3f_t color = vec3fScale(info->color, shade);
+			const vec3f_t color = clothInfoIsPinned(info, x, z) ? pin_color :
+				vec3fScale(info->color, shade);
 			cloth->vertices[i * 3 + 2] = color;
 			cloth->vertices[(vertex_count + i) * 3 + 2] = vec3fScale(color, 0.7f);
 		}

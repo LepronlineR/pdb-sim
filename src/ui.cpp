@@ -171,6 +171,18 @@ static void uiDrawToolbar(ui_t* ui) {
 		ImVec4(0.6f, 0.8f, 1.0f, 1.0f), ImVec4(0.4f, 1.0f, 0.5f, 1.0f), ImVec4(1.0f, 0.8f, 0.3f, 1.0f)
 	};
 	ImGui::TextColored(mode_colors[mode], "%s", mode_names[mode]);
+	if (mode == UI_MODE_EDIT) {
+		ImGui::SameLine();
+		ImGui::TextDisabled("|  Tool:");
+		ImGui::SameLine();
+		if (ImGui::RadioButton("Move", ui->view.tool == UI_TOOL_MOVE)) {
+			uiQueueSimple(ui, UI_COMMAND_SET_TOOL, UI_TOOL_MOVE);
+		}
+		ImGui::SameLine();
+		if (ImGui::RadioButton("Pin cloth", ui->view.tool == UI_TOOL_PIN)) {
+			uiQueueSimple(ui, UI_COMMAND_SET_TOOL, UI_TOOL_PIN);
+		}
+	}
 
 	const ui_stats_t* stats = &ui->view.stats;
 	ImGui::Text("FPS %.0f   physics %.2f ms   %d particles   %d contacts",
@@ -179,9 +191,16 @@ static void uiDrawToolbar(ui_t* ui) {
 		ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f),
 			"Physics fell behind: %.0f ms of simulation dropped", stats->dropped_ms);
 	}
-	ImGui::TextDisabled(mode == UI_MODE_EDIT ?
-		"Click: select   Right-drag: move   Del: delete   Left-drag: orbit   Wheel: zoom" :
-		"Right-drag: grab   Left-drag: orbit   Wheel: zoom   Stop restores the scene");
+	if (mode != UI_MODE_EDIT) {
+		ImGui::TextDisabled("Right-drag: grab   Left-drag: orbit   Wheel: zoom   Stop restores the scene");
+	}
+	else if (ui->view.tool == UI_TOOL_PIN) {
+		ImGui::TextDisabled("Click a cloth to pin or unpin a point   Left-drag: orbit   Wheel: zoom");
+	}
+	else {
+		ImGui::TextDisabled("Click: select   Drag a handle: move along X/Y/Z   Right-drag: move freely");
+		ImGui::TextDisabled("Del: delete   Left-drag: orbit   Wheel: zoom");
+	}
 
 	if (ImGui::CollapsingHeader("Solver")) {
 		ImGui::PushItemWidth(180.0f);
@@ -293,6 +312,14 @@ static void uiDrawInspector(ui_t* ui) {
 		changed |= ImGui::InputFloat("Bend compl.", &p->bending_compliance, 1.0e-3f, 1.0e-2f, "%.2e");
 		changed |= ImGui::SliderFloat("Air drag", &p->drag, 0.0f, 3.0f, "%.2f /s");
 		changed |= uiPinCombo(&p->pin);
+		ImGui::Text("Pinned points: %d", p->pin_count);
+		if (editing) {
+			ImGui::SameLine();
+			if (ImGui::SmallButton("Clear hand-placed pins")) {
+				uiQueueSimple(ui, UI_COMMAND_CLEAR_PINS, p->id);
+			}
+			ImGui::TextDisabled("Use the Pin cloth tool to pin points by clicking.");
+		}
 	}
 	if (p->kind != UI_OBJECT_SPHERE) {
 		changed |= ImGui::SliderFloat("Velocity retention", &p->velocity_retention, 0.0f, 1.0f, "%.2f");

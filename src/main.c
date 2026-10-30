@@ -26,7 +26,13 @@ typedef struct smoke_test_t {
 	uint64_t demo_hash;
 	uint64_t moved_hash;
 	uint64_t drape_hash;
+	uint64_t pinned_hash;
 	int moved_id;
+	float ball_before[3];
+	bool gizmo_ok;
+	int drag_x;
+	int drag_y;
+	int cloth_id;
 } smoke_test_t;
 
 static void smokeCheck(smoke_test_t* smoke, bool passed, const char* what) {
@@ -184,6 +190,68 @@ static bool smokeTestStep(smoke_test_t* smoke, scene_t* scene, ui_t* ui, wm_wind
 			const bool found = sceneGetObjectProperties(scene, sceneGetSelectedId(scene), &properties);
 			smokeCheck(smoke, sceneGetObjectCount(scene) == 3 && found && properties.kind == UI_OBJECT_SPHERE,
 				"a solid sphere can be added and clicked to select");
+			smokeCommand(ui, UI_COMMAND_CLEAR, -1);
+			smokeCommand(ui, UI_COMMAND_ADD_BALL, -1);  // selected, so the move gizmo shows
+			break;
+		}
+		case 460: {
+			ui_object_properties_t properties;
+			sceneGetObjectProperties(scene, sceneGetSelectedId(scene), &properties);
+			memcpy(smoke->ball_before, properties.position, sizeof(smoke->ball_before));
+			smoke->gizmo_ok = sceneGetGizmoHandle(scene, 0, width, height, &smoke->drag_x, &smoke->drag_y);
+			smokeCheck(smoke, smoke->gizmo_ok, "the move gizmo shows on the selection");
+			break;
+		}
+		case 475: {
+			sceneSetPointerOverride(scene, NULL);
+			ui_object_properties_t properties;
+			sceneGetObjectProperties(scene, sceneGetSelectedId(scene), &properties);
+			smokeCheck(smoke, properties.position[0] != smoke->ball_before[0] &&
+				properties.position[1] == smoke->ball_before[1] &&
+				properties.position[2] == smoke->ball_before[2],
+				"dragging the X handle moves the ball along X only");
+			smokeCommand(ui, UI_COMMAND_LOAD_DRAPE_DEMO, -1);  // sphere id, then cloth id
+			smokeCommand(ui, UI_COMMAND_SET_TOOL, UI_TOOL_PIN);
+			break;
+		}
+		case 480: {
+			/* The cloth is the most recent object; find its id from the selection-free
+			   scene by trying ids downward. */
+			ui_object_properties_t properties;
+			smoke->cloth_id = -1;
+			for (int id = 100; id > 0 && smoke->cloth_id < 0; --id) {
+				if (sceneGetObjectProperties(scene, id, &properties) && properties.kind == UI_OBJECT_CLOTH) {
+					smoke->cloth_id = id;
+				}
+			}
+			sceneGetObjectScreenPosition(scene, smoke->cloth_id, width, height, &smoke->drag_x, &smoke->drag_y);
+			break;
+		}
+		case 490: case 500: case 510: {
+			ui_object_properties_t properties;
+			sceneGetObjectProperties(scene, smoke->cloth_id, &properties);
+			static const int expected[] = { 1, 0, 1 };
+			static const char* what[] = {
+				"clicking a cloth with the Pin tool pins a point",
+				"clicking the pinned point again unpins it",
+				"and pins it again"
+			};
+			const int round = (f - 490) / 10;
+			smokeCheck(smoke, properties.pin_count == expected[round], what[round]);
+			if (round == 2) {
+				smoke->pinned_hash = sceneHashParticles(scene);
+				smokeCommand(ui, UI_COMMAND_PLAY, -1);
+			}
+			break;
+		}
+		case 600:
+			smokeCommand(ui, UI_COMMAND_STOP, -1);
+			break;
+		case 605: {
+			ui_object_properties_t properties;
+			sceneGetObjectProperties(scene, smoke->cloth_id, &properties);
+			smokeCheck(smoke, properties.pin_count == 1 && sceneHashParticles(scene) == smoke->pinned_hash,
+				"pins survive play and stop restores the pinned cloth");
 			break;
 		}
 	}
@@ -195,6 +263,23 @@ static bool smokeTestStep(smoke_test_t* smoke, scene_t* scene, ui_t* ui, wm_wind
 		drag.grab_held = f < 269;
 		sceneSetPointerOverride(scene, &drag);
 	}
+	/* Gizmo drag: press on the X handle, slide right, release. */
+	if (f >= 461 && f <= 472 && smoke->gizmo_ok) {
+		scene_pointer_t drag = center;
+		drag.x = smoke->drag_x + (f - 461) * 6;
+		drag.y = smoke->drag_y;
+		drag.select_held = f < 472;
+		sceneSetPointerOverride(scene, &drag);
+	}
+	/* Pin tool: three clicks on the cloth's center. */
+	if (f == 485 || f == 486 || f == 495 || f == 496 || f == 505 || f == 506) {
+		scene_pointer_t click = center;
+		click.x = smoke->drag_x;
+		click.y = smoke->drag_y;
+		click.select_held = (f % 10) == 5;
+		sceneSetPointerOverride(scene, &click);
+	}
+	if (f == 507) sceneSetPointerOverride(scene, NULL);
 	if (f > 30 && f < 92) {
 		center.grab_held = true;
 		sceneSetPointerOverride(scene, &center);
@@ -202,7 +287,7 @@ static bool smokeTestStep(smoke_test_t* smoke, scene_t* scene, ui_t* ui, wm_wind
 		smoke->max_grabbed = grabbed > smoke->max_grabbed ? grabbed : smoke->max_grabbed;
 	}
 	smoke->frame++;
-	return f < 455;
+	return f < 610;
 }
 
 int main(int argc, const char*argv[]) {
@@ -250,7 +335,7 @@ int main(int argc, const char*argv[]) {
 	wmDestroyWindow(window);
 	heapDestroy(heap);
 	if (smoke_mode) {
-		const bool finished = smoke.frame > 450;
+		const bool finished = smoke.frame > 605;
 		if (!finished) smoke.failures++;
 		debugPrintConsole("smoke test %s: %d frames, %d failed check(s)\n",
 			smoke.failures == 0 ? "passed" : "FAILED", smoke.frame, smoke.failures);

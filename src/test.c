@@ -461,7 +461,7 @@ static void testPhysicsGrab(heap_t* heap) {
 	const vec3f_t down = { 0, -1, 0 };
 	physics_particle_id_t particle;
 	float distance;
-	const bool picked = physicsPickParticle(scene.physics, origin, down, &particle, &distance);
+	const bool picked = physicsPickParticle(scene.physics, origin, down, false, &particle, &distance);
 	testCheck(picked && particle >= scene.first[0] &&
 		(int)(particle - scene.first[0]) < scene.count[0],
 		"pick finds the ball under the ray", picked ? "hit" : "missed");
@@ -517,8 +517,35 @@ static void testPhysicsClothDrapesOverSphere(heap_t* heap) {
 	physicsDestroy(scene.physics);
 }
 
+/* A cloth with one hand-placed pin and no preset pins hangs from that point: the
+   pinned particle stays put and the rest falls below it. */
+static void testPhysicsClothHangsFromCustomPin(heap_t* heap) {
+	physics_test_scene_t scene = { .heap = heap, .physics = physicsCreate(heap) };
+	cloth_info_t cloth = clothInfoDefault((vec3f_t){ 0, 4, 0 }, vec3fOne());
+	cloth.resolution = 24;
+	cloth.size = 2.0f;
+	cloth.pin = CLOTH_PIN_NONE;
+	clothInfoTogglePin(&cloth, 12, 12);
+	testSceneAddCloth(&scene, cloth);
+	const physics_particle_id_t pinned = scene.first[0] + 12 * 24 + 12;
+	const vec3f_t pinned_before = physicsGetParticlePosition(scene.physics, pinned);
+	testSceneRun(&scene, 300);
+	const vec3f_t pinned_after = physicsGetParticlePosition(scene.physics, pinned);
+	float lowest = FLT_MAX;
+	for (int i = 0; i < scene.count[0]; ++i) {
+		lowest = fminf(lowest, physicsGetParticlePosition(scene.physics, scene.first[0] + i).y);
+	}
+	char detail[128];
+	sprintf_s(detail, sizeof(detail), "%d pin, pinned point moved %.4f m, lowest point %.2f m",
+		clothInfoCountPins(&cloth), vec3fDistance(pinned_before, pinned_after), lowest);
+	testCheck(clothInfoCountPins(&cloth) == 1 && vec3fDistance(pinned_before, pinned_after) == 0.0f &&
+		lowest < 3.2f, "cloth hangs from a hand-placed pin", detail);
+	physicsDestroy(scene.physics);
+}
+
 int testPhysics(heap_t* heap) {
 	test_failures = 0;
+	testPhysicsClothHangsFromCustomPin(heap);
 	testPhysicsClothDrapesOverSphere(heap);
 	testPhysicsPile(heap);
 	testPhysicsSpin(heap);

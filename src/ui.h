@@ -27,6 +27,12 @@ typedef enum ui_play_mode_t {
 	UI_MODE_PAUSED    // simulation frozen mid-play
 } ui_play_mode_t;
 
+// Edit-mode tools.
+typedef enum ui_tool_t {
+	UI_TOOL_MOVE,  // a move gizmo on the selection: drag a handle along X, Y or Z
+	UI_TOOL_PIN    // clicking a cloth particle pins it in place (or unpins it)
+} ui_tool_t;
+
 typedef enum ui_object_kind_t {
 	UI_OBJECT_BALL,
 	UI_OBJECT_CLOTH,
@@ -55,6 +61,7 @@ typedef struct ui_object_properties_t {
 	float shear_compliance;
 	float drag;
 	int pin;  // cloth_pin_t
+	int pin_count;  // read-only: preset plus hand-placed pins
 } ui_object_properties_t;
 
 typedef struct ui_object_t {
@@ -78,6 +85,7 @@ typedef struct ui_stats_t {
 // What the scene publishes each frame.
 typedef struct ui_scene_view_t {
 	ui_play_mode_t mode;
+	ui_tool_t tool;
 	int object_count;
 	ui_object_t objects[UI_MAX_OBJECTS];
 	int selected_id;  // -1 when nothing is selected
@@ -101,6 +109,8 @@ typedef enum ui_command_type_t {
 	UI_COMMAND_LOAD_DRAPE_DEMO,
 	UI_COMMAND_CLEAR,
 	UI_COMMAND_SELECT,      // id, or -1 to deselect
+	UI_COMMAND_SET_TOOL,    // id is a ui_tool_t
+	UI_COMMAND_CLEAR_PINS,  // id: remove a cloth's hand-placed pins
 	UI_COMMAND_DELETE,      // id
 	UI_COMMAND_EDIT         // properties.id gets properties
 } ui_command_type_t;

@@ -62,11 +62,12 @@ void physicsSetSoftBodyDrag(physics_t* physics, int soft_body, float per_second)
 void physicsSetSoftBodyVolume(physics_t* physics, int soft_body, const uint16_t* indices,
 	int index_count, float compliance);
 
-// Finds the nearest dynamic particle along a ray.
+// Finds the nearest particle along a ray; static (pinned) particles count only
+// with include_static.
 //
 // RETURN: true if one was hit; particle and its distance along the ray are set
 bool physicsPickParticle(physics_t* physics, vec3f_t origin, vec3f_t direction,
-	physics_particle_id_t* particle, float* distance);
+	bool include_static, physics_particle_id_t* particle, float* distance);
 // Attaches the particle, and those of its soft body within radius of it, to
 // target; they keep their offsets from it while it moves.
 void physicsGrab(physics_t* physics, physics_particle_id_t particle, vec3f_t target,

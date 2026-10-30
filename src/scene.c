@@ -49,6 +49,11 @@ typedef enum scene_mode_t {
 	SCENE_MODE_PAUSED = UI_MODE_PAUSED
 } scene_mode_t;
 
+typedef enum scene_tool_t {
+	SCENE_TOOL_MOVE = UI_TOOL_MOVE,  // move gizmo on the selection
+	SCENE_TOOL_PIN = UI_TOOL_PIN     // clicking a cloth toggles a pin
+} scene_tool_t;
+
 typedef enum scene_object_kind_t {
 	SCENE_OBJECT_BALL,
 	SCENE_OBJECT_CLOTH,
@@ -106,6 +111,7 @@ typedef struct scene_t {
 	float aspect_ratio;
 
 	scene_mode_t mode;
+	scene_tool_t tool;
 	scene_object_t objects[SCENE_MAX_OBJECTS];
 	int object_count;
 	int next_object_id;
@@ -125,6 +131,11 @@ typedef struct scene_t {
 	int moving_id;
 	float grab_distance;
 	vec3f_t move_last_point;
+	// move gizmo: three rods then three tips, drawn with the sphere mesh
+	ecs_entity_t gizmo_entities[6];
+	int gizmo_hover_axis;  // -1 when no handle is under the cursor
+	int gizmo_drag_axis;   // -1 when no handle is being dragged
+	float gizmo_drag_param;
 
 	// stats, averaged over about a second
 	float physics_ms_average;
@@ -144,6 +155,7 @@ typedef struct scene_draw_uniform_t {
 } scene_draw_uniform_t;
 
 static void sceneBuildSphereMesh(scene_t* scene);
+static void sceneUpdateGizmo(scene_t* scene);
 
 static physics_world_component_t* sceneGetWorld(scene_t* scene) {
 	return ecsEntityGet(scene->ecs, scene->physics_entity, scene->physics_type, true);
@@ -526,6 +538,7 @@ static ui_object_properties_t sceneObjectProperties(const scene_object_t* object
 		p.shear_compliance = c->shear_compliance;
 		p.drag = c->drag;
 		p.pin = (int)c->pin;
+		p.pin_count = clothInfoCountPins(c);
 	}
 	return p;
 }
@@ -559,7 +572,11 @@ static void sceneEditObject(scene_t* scene, const ui_object_properties_t* p) {
 		c->velocity_retention = __max(0.0f, __min(1.0f, p->velocity_retention));
 		c->stretch_compliance = __max(0.0f, p->stretch_compliance);
 		c->bend_compliance = __max(0.0f, p->bending_compliance);
-		c->resolution = __max(4, __min(64, p->resolution));
+		const int resolution = __max(4, __min(64, p->resolution));
+		/* Hand-placed pins are grid points, which mean nothing at another
+		   resolution. */
+		if (resolution != c->resolution) memset(c->pin_mask, 0, sizeof(c->pin_mask));
+		c->resolution = resolution;
 		c->size = __max(0.5f, __min(10.0f, p->size));
 		c->shear_compliance = __max(0.0f, p->shear_compliance);
 		c->drag = __max(0.0f, p->drag);
@@ -575,6 +592,7 @@ static void sceneEditObject(scene_t* scene, const ui_object_properties_t* p) {
 static void scenePlay(scene_t* scene) {
 	if (scene->mode != SCENE_MODE_EDIT) return;
 	scene->moving = false;
+	scene->gizmo_drag_axis = -1;
 	scene->mode = SCENE_MODE_PLAYING;
 	sceneGetWorld(scene)->accumulator = 0.0f;
 }
@@ -621,6 +639,18 @@ static void sceneHandleCommands(scene_t* scene, ui_t* ui) {
 				if (scene->mode == SCENE_MODE_EDIT) sceneClearObjects(scene);
 				break;
 			case UI_COMMAND_SELECT: sceneSelect(scene, command.id); break;
+			case UI_COMMAND_SET_TOOL:
+				scene->tool = command.id == UI_TOOL_PIN ? SCENE_TOOL_PIN : SCENE_TOOL_MOVE;
+				break;
+			case UI_COMMAND_CLEAR_PINS: {
+				scene_object_t* object = sceneFindObject(scene, command.id);
+				if (object && object->kind == SCENE_OBJECT_CLOTH && scene->mode == SCENE_MODE_EDIT) {
+					memset(object->cloth.pin_mask, 0, sizeof(object->cloth.pin_mask));
+					scene->selected_revision++;
+					sceneRebuild(scene, false);
+				}
+				break;
+			}
 			case UI_COMMAND_DELETE: sceneDeleteObject(scene, command.id); break;
 			case UI_COMMAND_EDIT: sceneEditObject(scene, &command.properties); break;
 		}
@@ -667,6 +697,14 @@ scene_t* sceneCreate(heap_t* heap, fs_t* fs, wm_window_t* window, renderer_t* re
 	sceneLoadResources(scene);
 	sceneSpawnCamera(scene);
 	sceneSpawnModel(scene, "ground", (vec3f_t){0,-.1f,0}, (vec3f_t){12,.1f,12}, &scene->cube_mesh);
+	scene->gizmo_hover_axis = -1;
+	scene->gizmo_drag_axis = -1;
+	for (int part = 0; part < 6; ++part) {
+		scene->gizmo_entities[part] = sceneSpawnModel(scene, "move gizmo", vec3fZero(), vec3fOne(), NULL);
+		model_component_t* model = ecsEntityGet(scene->ecs, scene->gizmo_entities[part],
+			scene->model_type, true);
+		model->shader_info = shaderLoaderGetPbr(scene->shaders);
+	}
 	return scene;
 }
 
@@ -687,6 +725,7 @@ void sceneUpdate(scene_t* scene) {
 	sceneHandleCommands(scene, uiGet(scene->window));
 	sceneUpdateCamera(scene);
 	sceneUpdateInteraction(scene);
+	sceneUpdateGizmo(scene);
 	sceneUpdateSimulation(scene);
 	sceneDrawModels(scene);
 	rendererFrameDone(scene->render);
@@ -809,7 +848,8 @@ void sceneUpdateCamera(scene_t* scene) {
 	int mouse_x = 0;
 	int mouse_y = 0;
 	wmGetMouseLoc(scene->window, &mouse_x, &mouse_y);
-	if ((wmGetMouseMask(scene->window) & k_mouse_button_left) && !ui_mouse) {
+	if ((wmGetMouseMask(scene->window) & k_mouse_button_left) && !ui_mouse &&
+		scene->gizmo_drag_axis < 0) {
 		camera->orbit_yaw -= (float)mouse_x * 0.008f;
 		camera->orbit_pitch -= (float)mouse_y * 0.008f;
 		camera->orbit_pitch = __max(-1.45f, __min(1.45f, camera->orbit_pitch));
@@ -871,12 +911,13 @@ static bool sceneGetPointerRay(scene_t* scene, const camera_component_t* camera,
 /* The nearest visible object under the ray, or NULL. distance is set; particle
    is set for soft bodies and left as UINT32_MAX for spheres. */
 static scene_object_t* scenePickObject(scene_t* scene, vec3f_t origin, vec3f_t direction,
-	physics_particle_id_t* particle, float* distance) {
+	bool include_static, physics_particle_id_t* particle, float* distance) {
 	physics_t* physics = sceneGetPhysics(scene);
 	float particle_distance = FLT_MAX;
 	float collider_distance = FLT_MAX;
 	int collider = -1;
-	if (!physicsPickParticle(physics, origin, direction, particle, &particle_distance)) {
+	if (!physicsPickParticle(physics, origin, direction, include_static, particle,
+		&particle_distance)) {
 		particle_distance = FLT_MAX;
 	}
 	if (!physicsPickSphereCollider(physics, origin, direction, &collider, &collider_distance)) {
@@ -898,8 +939,143 @@ static scene_object_t* scenePickObject(scene_t* scene, vec3f_t origin, vec3f_t d
 	return NULL;
 }
 
-/* Left click selects (or deselects on empty space). Right-drag moves an object
-   in Edit and grabs it physically while playing. */
+/* Moves an object in Edit without rebuilding: its particles (or collider) are
+   teleported and its authored position updated. Callers rebuild when the drag
+   ends, so the authored world matches what Stop will rebuild. */
+static void sceneTranslateObject(scene_t* scene, scene_object_t* object, vec3f_t offset) {
+	physics_t* physics = sceneGetPhysics(scene);
+	physicsTranslateParticles(physics, object->first_particle, object->particle_count, offset);
+	sceneObjectSetPosition(object, vec3fAdd(sceneObjectPosition(object), offset));
+	if (object->collider >= 0) {
+		physicsSetSphereCollider(physics, object->collider, object->sphere.center,
+			object->sphere.radius);
+		sceneObjectUpdateModel(scene, object);
+	}
+	if (object->id == scene->selected_id) scene->selected_revision++;
+}
+
+//  --------------------------------------------------------------------------
+//								MOVE GIZMO
+//
+
+static const vec3f_t scene_gizmo_axes[3] = { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } };
+
+/* The selected object while the move gizmo is showing, or NULL. */
+static scene_object_t* sceneGizmoTarget(scene_t* scene) {
+	if (scene->mode != SCENE_MODE_EDIT || scene->tool != SCENE_TOOL_MOVE) return NULL;
+	scene_object_t* object = sceneFindObject(scene, scene->selected_id);
+	return object && !object->hidden ? object : NULL;
+}
+
+/* Handles start at the object's position and reach past its surface. */
+static float sceneGizmoLength(const scene_object_t* object) {
+	switch (object->kind) {
+		case SCENE_OBJECT_BALL: return object->ball.radius * 1.1f + 0.8f;
+		case SCENE_OBJECT_CLOTH: return object->cloth.size * 0.5f + 0.8f;
+		default: return object->sphere.radius + 0.8f;
+	}
+}
+
+/* Closest approach between the ray origin + s * direction (s >= 0) and the axis
+   line center + t * axis. Returns false when they are parallel. */
+static bool sceneRayAxisClosest(vec3f_t origin, vec3f_t direction, vec3f_t center, vec3f_t axis,
+	float* s, float* t) {
+	const vec3f_t w = vec3fSub(origin, center);
+	const float b = vec3fDot(direction, axis);
+	const float d = vec3fDot(direction, w);
+	const float e = vec3fDot(axis, w);
+	const float denominator = 1.0f - b * b;
+	if (denominator < 1.0e-5f) return false;
+	*s = (b * e - d) / denominator;
+	*t = (e - b * d) / denominator;
+	return true;
+}
+
+/* The handle under the ray, or -1. A handle counts if the ray passes within a
+   tolerance that grows with distance, so it stays easy to hit from afar. */
+static int sceneGizmoPick(scene_t* scene, const scene_object_t* object, vec3f_t origin,
+	vec3f_t direction) {
+	const vec3f_t center = sceneObjectPosition(object);
+	const float length = sceneGizmoLength(object);
+	int best_axis = -1;
+	float best = FLT_MAX;
+	for (int axis = 0; axis < 3; ++axis) {
+		float s, t;
+		if (!sceneRayAxisClosest(origin, direction, center, scene_gizmo_axes[axis], &s, &t)) continue;
+		t = __max(length * 0.2f, __min(length, t));  // the pivot itself is not a handle
+		s = __max(0.0f, vec3fDot(vec3fSub(vec3fAdd(center, vec3fScale(scene_gizmo_axes[axis], t)),
+			origin), direction));
+		const vec3f_t on_ray = vec3fAdd(origin, vec3fScale(direction, s));
+		const vec3f_t on_axis = vec3fAdd(center, vec3fScale(scene_gizmo_axes[axis], t));
+		const float miss = vec3fDistance(on_ray, on_axis);
+		const float tolerance = 0.08f + 0.012f * s;
+		if (miss < tolerance && miss < best) {
+			best = miss;
+			best_axis = axis;
+		}
+	}
+	(void)scene;
+	return best_axis;
+}
+
+/* Places the gizmo's rods and tips (stretched copies of the sphere mesh) on the
+   selected object, or hides them. */
+static void sceneUpdateGizmo(scene_t* scene) {
+	scene_object_t* object = sceneGizmoTarget(scene);
+	for (int part = 0; part < 6; ++part) {
+		const int axis = part % 3;
+		const bool tip = part >= 3;
+		model_component_t* model = ecsEntityGet(scene->ecs, scene->gizmo_entities[part],
+			scene->model_type, true);
+		transform_component_t* transform = ecsEntityGet(scene->ecs, scene->gizmo_entities[part],
+			scene->transform_type, true);
+		if (!object) {
+			model->mesh_info = NULL;
+			continue;
+		}
+		const vec3f_t center = sceneObjectPosition(object);
+		const float length = sceneGizmoLength(object);
+		const vec3f_t direction = scene_gizmo_axes[axis];
+		transformIdentity(&transform->transform);
+		if (tip) {
+			transform->transform.translation = vec3fAdd(center, vec3fScale(direction, length));
+			transform->transform.scale = (vec3f_t){ 0.14f, 0.14f, 0.14f };
+		}
+		else {
+			const float thickness = 0.045f;
+			transform->transform.translation = vec3fAdd(center, vec3fScale(direction, length * 0.5f));
+			transform->transform.scale = vec3fAdd(vec3fScale(direction, length * 0.5f - thickness),
+				(vec3f_t){ thickness, thickness, thickness });
+		}
+		const bool active = axis == scene->gizmo_drag_axis ||
+			(scene->gizmo_drag_axis < 0 && axis == scene->gizmo_hover_axis);
+		static const float colors[3][3] = { { 1.0f, .22f, .22f }, { .30f, 1.0f, .30f }, { .30f, .45f, 1.0f } };
+		model->mesh_info = &scene->sphere_mesh;
+		model->tint[0] = active ? 1.4f : colors[axis][0];
+		model->tint[1] = active ? 1.2f : colors[axis][1];
+		model->tint[2] = active ? 0.2f : colors[axis][2];
+	}
+}
+
+/* Toggles the pin of the cloth particle under the ray (Pin tool). Returns false
+   if the ray hit no cloth particle. */
+static bool sceneTogglePinAt(scene_t* scene, vec3f_t origin, vec3f_t direction) {
+	physics_particle_id_t particle;
+	float distance;
+	scene_object_t* object = scenePickObject(scene, origin, direction, true, &particle, &distance);
+	if (!object || object->kind != SCENE_OBJECT_CLOTH || particle == UINT32_MAX) return false;
+	const int n = clothInfoResolution(&object->cloth);
+	const int index = (int)(particle - object->first_particle);
+	clothInfoTogglePin(&object->cloth, index % n, index / n);
+	sceneSelect(scene, object->id);
+	scene->selected_revision++;
+	sceneRebuild(scene, false);
+	return true;
+}
+
+/* Edit mode: the Move tool's gizmo drags along one axis; a left click selects
+   (or, with the Pin tool, toggles a cloth pin); right-drag moves an object
+   freely. Play mode: left click selects, right-drag grabs physically. */
 void sceneUpdateInteraction(scene_t* scene) {
 	camera_component_t* camera = ecsEntityGet(scene->ecs, scene->camera_entity,
 		scene->camera_type, false);
@@ -909,17 +1085,55 @@ void sceneUpdateInteraction(scene_t* scene) {
 		!sceneGetPointerRay(scene, camera, &pointer, &origin, &direction)) return;
 	const bool ui_mouse = !scene->pointer_overridden && uiWantsMouse(uiGet(scene->window));
 	physics_t* physics = sceneGetPhysics(scene);
+	const bool select_pressed = pointer.select_held && !scene->select_was_held;
+	const bool select_released = !pointer.select_held && scene->select_was_held;
 
-	// selection: a press and release without dragging the camera
-	if (pointer.select_held && !scene->select_was_held) {
+	// move gizmo: hover, start, drag along the axis, end
+	scene_object_t* gizmo_target = sceneGizmoTarget(scene);
+	if (scene->gizmo_drag_axis >= 0) {
+		const vec3f_t axis = scene_gizmo_axes[scene->gizmo_drag_axis];
+		float s, t;
+		if (gizmo_target && pointer.select_held &&
+			sceneRayAxisClosest(origin, direction, sceneObjectPosition(gizmo_target), axis, &s, &t)) {
+			/* t is measured from the object's current position, which moves with the
+			   drag, so the step is t minus where the grab point sits now. */
+			const float step = t - scene->gizmo_drag_param;
+			if (step != 0.0f) sceneTranslateObject(scene, gizmo_target, vec3fScale(axis, step));
+		}
+		if (!pointer.select_held || !gizmo_target) {
+			scene->gizmo_drag_axis = -1;
+			scene->select_travel = SCENE_CLICK_SLOP;  // the release is not a click
+			sceneRebuild(scene, false);
+		}
+	}
+	else if (gizmo_target && !ui_mouse) {
+		scene->gizmo_hover_axis = sceneGizmoPick(scene, gizmo_target, origin, direction);
+		if (select_pressed && scene->gizmo_hover_axis >= 0) {
+			float s, t;
+			if (sceneRayAxisClosest(origin, direction, sceneObjectPosition(gizmo_target),
+				scene_gizmo_axes[scene->gizmo_hover_axis], &s, &t)) {
+				scene->gizmo_drag_axis = scene->gizmo_hover_axis;
+				scene->gizmo_drag_param = t;
+			}
+		}
+	}
+	else {
+		scene->gizmo_hover_axis = -1;
+	}
+
+	// selection: a press and release without dragging the camera or a handle
+	if (select_pressed && scene->gizmo_drag_axis < 0) {
 		scene->select_travel = 0;
 	}
-	if (!pointer.select_held && scene->select_was_held && !ui_mouse &&
-		scene->select_travel < SCENE_CLICK_SLOP) {
-		physics_particle_id_t particle;
-		float distance;
-		scene_object_t* object = scenePickObject(scene, origin, direction, &particle, &distance);
-		sceneSelect(scene, object ? object->id : -1);
+	if (select_released && !ui_mouse && scene->select_travel < SCENE_CLICK_SLOP) {
+		const bool pinned = scene->mode == SCENE_MODE_EDIT && scene->tool == SCENE_TOOL_PIN &&
+			sceneTogglePinAt(scene, origin, direction);
+		if (!pinned) {
+			physics_particle_id_t particle;
+			float distance;
+			scene_object_t* object = scenePickObject(scene, origin, direction, true, &particle, &distance);
+			sceneSelect(scene, object ? object->id : -1);
+		}
 	}
 	scene->select_was_held = pointer.select_held;
 
@@ -937,10 +1151,10 @@ void sceneUpdateInteraction(scene_t* scene) {
 
 	if (scene->mode == SCENE_MODE_EDIT) {
 		if (!scene->moving) {
-			if (ui_mouse) return;
+			if (ui_mouse || scene->gizmo_drag_axis >= 0) return;
 			physics_particle_id_t particle;
 			float distance;
-			scene_object_t* object = scenePickObject(scene, origin, direction, &particle, &distance);
+			scene_object_t* object = scenePickObject(scene, origin, direction, true, &particle, &distance);
 			if (!object) return;
 			sceneSelect(scene, object->id);
 			scene->moving = true;
@@ -957,14 +1171,7 @@ void sceneUpdateInteraction(scene_t* scene) {
 		const vec3f_t point = vec3fAdd(origin, vec3fScale(direction, scene->grab_distance));
 		const vec3f_t offset = vec3fSub(point, scene->move_last_point);
 		scene->move_last_point = point;
-		physicsTranslateParticles(physics, object->first_particle, object->particle_count, offset);
-		sceneObjectSetPosition(object, vec3fAdd(sceneObjectPosition(object), offset));
-		if (object->collider >= 0) {
-			physicsSetSphereCollider(physics, object->collider, object->sphere.center,
-				object->sphere.radius);
-			sceneObjectUpdateModel(scene, object);
-		}
-		if (object->id == scene->selected_id) scene->selected_revision++;
+		sceneTranslateObject(scene, object, offset);
 		return;
 	}
 
@@ -973,7 +1180,7 @@ void sceneUpdateInteraction(scene_t* scene) {
 		if (ui_mouse) return;
 		physics_particle_id_t particle;
 		float distance;
-		scene_object_t* object = scenePickObject(scene, origin, direction, &particle, &distance);
+		scene_object_t* object = scenePickObject(scene, origin, direction, false, &particle, &distance);
 		if (object && object->kind != SCENE_OBJECT_SPHERE) {
 			scene->grab_distance = distance;
 			physicsGrab(physics, particle, vec3fAdd(origin, vec3fScale(direction, distance)),
@@ -983,6 +1190,37 @@ void sceneUpdateInteraction(scene_t* scene) {
 		return;
 	}
 	physicsMoveGrab(physics, vec3fAdd(origin, vec3fScale(direction, scene->grab_distance)));
+}
+
+/* Projects a world point to client pixels with the same camera the ray uses. */
+static bool sceneWorldToScreen(scene_t* scene, vec3f_t point, int width, int height, int* x, int* y) {
+	camera_component_t* camera = ecsEntityGet(scene->ecs, scene->camera_entity,
+		scene->camera_type, false);
+	if (!camera) return false;
+	mat4f_t view_projection;
+	mat4fMul(&view_projection, &camera->projection, &camera->view);
+	float clip[4];
+	for (int row = 0; row < 4; ++row) {
+		clip[row] = view_projection.mat[row][0] * point.x + view_projection.mat[row][1] * point.y +
+			view_projection.mat[row][2] * point.z + view_projection.mat[row][3];
+	}
+	if (clip[3] <= 0.0f) return false;
+	*x = (int)((clip[0] / clip[3] + 1.0f) * 0.5f * (float)width);
+	*y = (int)((clip[1] / clip[3] + 1.0f) * 0.5f * (float)height);
+	return true;
+}
+
+bool sceneGetObjectScreenPosition(scene_t* scene, int id, int width, int height, int* x, int* y) {
+	const scene_object_t* object = sceneFindObject(scene, id);
+	return object && sceneWorldToScreen(scene, sceneObjectPosition(object), width, height, x, y);
+}
+
+bool sceneGetGizmoHandle(scene_t* scene, int axis, int width, int height, int* x, int* y) {
+	const scene_object_t* object = sceneGizmoTarget(scene);
+	if (!object || axis < 0 || axis > 2) return false;
+	const vec3f_t point = vec3fAdd(sceneObjectPosition(object),
+		vec3fScale(scene_gizmo_axes[axis], sceneGizmoLength(object) * 0.8f));
+	return sceneWorldToScreen(scene, point, width, height, x, y);
 }
 
 //  --------------------------------------------------------------------------
@@ -1002,6 +1240,7 @@ static void scenePublishView(scene_t* scene, ui_t* ui) {
 	ui_scene_view_t view;
 	memset(&view, 0, sizeof(view));
 	view.mode = (ui_play_mode_t)scene->mode;
+	view.tool = (ui_tool_t)scene->tool;
 	for (int i = 0; i < scene->object_count; ++i) {
 		const scene_object_t* object = &scene->objects[i];
 		if (object->hidden) continue;

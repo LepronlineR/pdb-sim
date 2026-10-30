@@ -1114,12 +1114,12 @@ void physicsSetSoftBodyVolume(physics_t* physics, int soft_body, const uint16_t*
 }
 
 bool physicsPickParticle(physics_t* physics, vec3f_t origin, vec3f_t direction,
-	physics_particle_id_t* particle, float* distance) {
+	bool include_static, physics_particle_id_t* particle, float* distance) {
 	direction = vec3fNorm(direction);
 	float best = FLT_MAX;
 	int best_particle = -1;
 	for (int i = 0; i < physics->particle_count; ++i) {
-		if (physics->inverse_masses[i] == 0.0f) continue;
+		if (!include_static && physics->inverse_masses[i] == 0.0f) continue;
 		const vec3f_t to_particle = vec3fSub(physics->positions[i], origin);
 		const float along = vec3fDot(to_particle, direction);
 		if (along <= 0.0f || along >= best) continue;

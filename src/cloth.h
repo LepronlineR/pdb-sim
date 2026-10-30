@@ -26,6 +26,10 @@ typedef enum cloth_pin_t {
 	CLOTH_PIN_COUNT
 } cloth_pin_t;
 
+enum {
+	CLOTH_MAX_RESOLUTION = 64
+};
+
 typedef struct cloth_info_t {
 	vec3f_t center;
 	vec3f_t color;
@@ -38,7 +42,17 @@ typedef struct cloth_info_t {
 	float velocity_retention;
 	float drag;              // fraction of velocity lost per second to the air
 	cloth_pin_t pin;
+	// Extra pinned particles chosen by hand, on top of the preset: bit x of row z
+	// pins the particle at grid (x, z).
+	uint64_t pin_mask[CLOTH_MAX_RESOLUTION];
 } cloth_info_t;
+
+// Particles per side the cloth will actually have (the resolution, clamped).
+int clothInfoResolution(const cloth_info_t* info);
+// Whether grid point (x, z) is pinned by the preset or the pin mask.
+bool clothInfoIsPinned(const cloth_info_t* info, int x, int z);
+void clothInfoTogglePin(cloth_info_t* info, int x, int z);
+int clothInfoCountPins(const cloth_info_t* info);
 
 cloth_info_t clothInfoDefault(vec3f_t center, vec3f_t color);
 bool clothCanCreate(physics_t* physics, const cloth_info_t* info);
