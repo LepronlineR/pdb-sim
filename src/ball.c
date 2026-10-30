@@ -16,7 +16,9 @@ typedef struct ball_t {
 	gpu_mesh_info_t mesh;
 	vec3f_t* vertices;
 	uint16_t* indices;
-	physics_body_t** particles;
+	physics_t* physics;
+	/* The ball's particles are consecutive ids starting here, one per vertex. */
+	physics_particle_id_t first_particle;
 } ball_t;
 
 ball_info_t ballInfoDefault(vec3f_t position, vec3f_t color, float mass) {
@@ -42,8 +44,7 @@ ball_t* ballCreate(heap_t* heap, physics_t* physics, const ball_info_t* info) {
 	ball->heap = heap;
 	ball->vertices = heapAlloc(heap, sizeof(vec3f_t) * BALL_VERTEX_COUNT * 3, _Alignof(vec3f_t));
 	ball->indices = heapAlloc(heap, sizeof(uint16_t) * BALL_INDEX_COUNT, _Alignof(uint16_t));
-	ball->particles = heapAlloc(heap, sizeof(physics_body_t*) * BALL_VERTEX_COUNT,
-		_Alignof(physics_body_t*));
+	ball->physics = physics;
 	ballBuildMesh(ball, info->color);
 
 	const float particle_mass = info->mass / (float)BALL_VERTEX_COUNT;
@@ -55,7 +56,9 @@ ball_t* ballCreate(heap_t* heap, physics_t* physics, const ball_info_t* info) {
 	for (int i = 0; i < BALL_VERTEX_COUNT; ++i) {
 		vec3f_t local = vec3fScale(ball->vertices[i * 3], info->radius);
 		vec3f_t position = vec3fAdd(info->position, local);
-		ball->particles[i] = physicsAddParticle(physics, position, particle_radius, particle_mass);
+		const physics_particle_id_t particle = physicsAddParticle(physics, position,
+			particle_radius, particle_mass);
+		if (i == 0) ball->first_particle = particle;
 		ball->vertices[i * 3] = position;
 	}
 	ballUpdateMesh(ball);
@@ -65,21 +68,21 @@ ball_t* ballCreate(heap_t* heap, physics_t* physics, const ball_info_t* info) {
 
 void ballDestroy(ball_t* ball) {
 	if (!ball) return;
-	heapFree(ball->heap, ball->particles);
 	heapFree(ball->heap, ball->indices);
 	heapFree(ball->heap, ball->vertices);
 	heapFree(ball->heap, ball);
 }
 
 void ballUpdateMesh(ball_t* ball) {
+	const vec3f_t* positions = physicsGetParticlePositions(ball->physics) + ball->first_particle;
 	vec3f_t center = vec3fZero();
 	for (int i = 0; i < BALL_VERTEX_COUNT; ++i) {
-		center = vec3fAdd(center, ball->particles[i]->position);
+		center = vec3fAdd(center, positions[i]);
 	}
 	center = vec3fScale(center, 1.0f / (float)BALL_VERTEX_COUNT);
 
 	for (int i = 0; i < BALL_VERTEX_COUNT; ++i) {
-		vec3f_t position = ball->particles[i]->position;
+		vec3f_t position = positions[i];
 		ball->vertices[i * 3] = position;
 		ball->vertices[i * 3 + 1] = vec3fNorm(vec3fSub(position, center));
 	}
@@ -215,21 +218,21 @@ void ballBuildConstraints(ball_t* ball, physics_t* physics, const ball_info_t* i
 			int table_index = low * BALL_VERTEX_COUNT + high;
 			if (!edge_added[table_index]) {
 				edge_added[table_index] = 1;
-				float rest = vec3fDistance(ball->particles[a]->position, ball->particles[b]->position);
-				physicsAddDistanceConstraint(physics, ball->particles[a], ball->particles[b],
-					rest, info->structural_compliance);
+				float rest = vec3fDistance(ball->vertices[a * 3], ball->vertices[b * 3]);
+				physicsAddDistanceConstraint(physics, ball->first_particle + a,
+					ball->first_particle + b, rest, info->structural_compliance);
 				first_opposite[table_index] = opposite;
 			} else if (first_opposite[table_index] != UINT16_MAX) {
 				uint16_t other = first_opposite[table_index];
-				float rest = vec3fDistance(ball->particles[opposite]->position,
-					ball->particles[other]->position);
-				physicsAddDistanceConstraint(physics, ball->particles[opposite],
-					ball->particles[other], rest, info->bending_compliance);
+				float rest = vec3fDistance(ball->vertices[opposite * 3], ball->vertices[other * 3]);
+				physicsAddDistanceConstraint(physics, ball->first_particle + opposite,
+					ball->first_particle + other, rest, info->bending_compliance);
 			}
 		}
 	}
-	physics_volume_constraint_t* volume = physicsAddVolumeConstraint(physics, ball->particles,
-		BALL_VERTEX_COUNT, ball->indices, BALL_INDEX_COUNT, info->volume_compliance);
+	physics_volume_constraint_t* volume = physicsAddVolumeConstraint(physics,
+		ball->first_particle, BALL_VERTEX_COUNT, ball->indices, BALL_INDEX_COUNT,
+		info->volume_compliance);
 	physicsSetVolumeDamping(volume, info->velocity_retention);
 	heapFree(ball->heap, first_opposite);
 	heapFree(ball->heap, edge_added);

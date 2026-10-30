@@ -9,15 +9,10 @@
 
 typedef struct physics_t physics_t;
 
-typedef struct physics_body_t {
-	vec3f_t position;
-	vec3f_t previous_position;
-	vec3f_t velocity;
-	float radius;
-	float inverse_mass;
-} physics_body_t;
+// Particles are referred to by id; ids are dense and assigned in creation order,
+// so particles added back to back have consecutive ids.
+typedef uint32_t physics_particle_id_t;
 
-typedef struct physics_distance_constraint_t physics_distance_constraint_t;
 typedef struct physics_volume_constraint_t physics_volume_constraint_t;
 
 typedef struct heap_t heap_t;
@@ -27,12 +22,21 @@ typedef struct ecs_t ecs_t;
 physics_t* physicsCreate(heap_t* heap);
 void physicsDestroy(physics_t* physics);
 // Adds a spherical particle. A mass of zero makes it static.
-physics_body_t* physicsAddParticle(physics_t* physics, vec3f_t position,
+physics_particle_id_t physicsAddParticle(physics_t* physics, vec3f_t position,
 	float radius, float mass);
-physics_distance_constraint_t* physicsAddDistanceConstraint(physics_t* physics,
-	physics_body_t* body_a, physics_body_t* body_b, float rest_length, float compliance);
+vec3f_t physicsGetParticlePosition(physics_t* physics, physics_particle_id_t particle);
+vec3f_t physicsGetParticleVelocity(physics_t* physics, physics_particle_id_t particle);
+void physicsSetParticleVelocity(physics_t* physics, physics_particle_id_t particle,
+	vec3f_t velocity);
+float physicsGetParticleRadius(physics_t* physics, physics_particle_id_t particle);
+// All particle positions, indexed by id. Valid until the next physicsUpdate.
+const vec3f_t* physicsGetParticlePositions(physics_t* physics);
+void physicsAddDistanceConstraint(physics_t* physics, physics_particle_id_t particle_a,
+	physics_particle_id_t particle_b, float rest_length, float compliance);
+// The volume is enclosed by particles [first_particle, first_particle + particle_count);
+// indices are triangles relative to first_particle.
 physics_volume_constraint_t* physicsAddVolumeConstraint(physics_t* physics,
-	physics_body_t** bodies, int body_count, const uint16_t* indices,
+	physics_particle_id_t first_particle, int particle_count, const uint16_t* indices,
 	int index_count, float compliance);
 // Fraction of deformation velocity kept per 1/60 s. Rigid motion is not damped.
 void physicsSetVolumeDamping(physics_volume_constraint_t* constraint, float retention);
@@ -47,14 +51,9 @@ void physicsSetSolverIterations(physics_t* physics, int iterations);
 void physicsSetFriction(physics_t* physics, float static_coefficient,
 	float dynamic_coefficient);
 void physicsSetRestitution(physics_t* physics, float restitution);
-bool physicsHasCapacity(physics_t* physics, int body_count,
+bool physicsHasCapacity(physics_t* physics, int particle_count,
 	int distance_constraint_count, int volume_constraint_count);
 void physicsUpdate(physics_t* physics, float delta_seconds);
-void physicsSolveDistanceConstraint(physics_distance_constraint_t* constraint,
-	float inverse_dt_squared);
-void physicsSolveVolumeConstraint(physics_volume_constraint_t* constraint,
-	float inverse_dt_squared);
-float physicsCalculateVolume(physics_volume_constraint_t* constraint);
 int physicsGetContactCount(physics_t* physics);
 
 

@@ -20,20 +20,24 @@
        solve distance + volume constraints per soft body, then contacts
        rebuild velocities from positions
        contact velocity pass (dynamic friction, restitution)
-       damp deformation, keeping each soft body's rigid motion */
+       damp deformation, keeping each soft body's rigid motion
+
+   Particle state is stored as separate arrays indexed by particle id, so the
+   solver loops touch only the fields they use. Constraints refer to particles
+   by id. */
 
 enum {
-	PHYSICS_MAX_BODIES = 8192,
+	PHYSICS_MAX_PARTICLES = 8192,
 	PHYSICS_MAX_DISTANCE_CONSTRAINTS = 32768,
 	PHYSICS_MAX_VOLUME_CONSTRAINTS = 16,
 	PHYSICS_MAX_VOLUME_INDICES = 1536,
 	PHYSICS_MAX_CONTACTS = 65536,
-	PHYSICS_GRID_TABLE_SIZE = 16384, /* power of two, >= 2 * PHYSICS_MAX_BODIES */
+	PHYSICS_GRID_TABLE_SIZE = 16384, /* power of two, >= 2 * PHYSICS_MAX_PARTICLES */
 	PHYSICS_MAX_WORKERS = 8,
-	PHYSICS_MIN_BODY_WORK_PER_THREAD = 1024
+	PHYSICS_MIN_PARTICLE_WORK_PER_THREAD = 1024
 };
 
-#define PHYSICS_GROUND_BODY (-1)
+#define PHYSICS_GROUND (-1)
 
 typedef void (*physics_parallel_func_t)(physics_t* physics, int start, int end,
 	float delta_seconds, float inverse_dt_squared);
@@ -43,19 +47,19 @@ typedef struct physics_worker_t {
 	int index;
 } physics_worker_t;
 
-struct physics_distance_constraint_t {
-	physics_body_t* body_a;
-	physics_body_t* body_b;
+typedef struct physics_distance_constraint_t {
+	physics_particle_id_t particle_a;
+	physics_particle_id_t particle_b;
 	float rest_length;
 	float compliance;
 	float lambda;
-};
+} physics_distance_constraint_t;
 
 struct physics_volume_constraint_t {
-	physics_body_t** bodies;
+	physics_particle_id_t first_particle;
+	int particle_count;
 	uint16_t* indices;
 	vec3f_t* gradients;
-	int body_count;
 	int index_count;
 	float total_mass;
 	float rest_volume;
@@ -65,10 +69,10 @@ struct physics_volume_constraint_t {
 };
 
 /* A non-penetration constraint between two particles, or a particle and the
-   ground plane when body_b is PHYSICS_GROUND_BODY. The normal points from b to a. */
+   ground plane when particle_b is PHYSICS_GROUND. The normal points from b to a. */
 typedef struct physics_contact_t {
-	int body_a;
-	int body_b;
+	int particle_a;
+	int particle_b;
 	vec3f_t normal;
 	float lambda;
 	float normal_speed_before;
@@ -76,13 +80,25 @@ typedef struct physics_contact_t {
 
 typedef struct physics_t {
 	heap_t* heap;
-	physics_body_t* bodies;
-	int body_count;
+	int particle_count;
+	vec3f_t* positions;
+	vec3f_t* previous_positions;
+	vec3f_t* velocities;
+	float* inverse_masses;
+	float* radii;
+	/* Index of the volume constraint that first claimed each particle, or -1. */
+	int* particle_owner;
 	float max_radius;
+	/* Kept sorted by island once built: island i is
+	   [distance_island_offsets[i], distance_island_offsets[i + 1]), and the last
+	   island holds constraints that span soft bodies or belong to none. */
 	physics_distance_constraint_t* distance_constraints;
 	int distance_constraint_count;
+	int distance_island_offsets[PHYSICS_MAX_VOLUME_CONSTRAINTS + 2];
+	bool distance_islands_dirty;
 	physics_volume_constraint_t* volume_constraints;
 	int volume_constraint_count;
+	bool volume_particles_shared;
 	physics_contact_t* contacts;
 	int contact_count;
 	bool contact_overflow_reported;
@@ -91,15 +107,6 @@ typedef struct physics_t {
 	int* grid_start;
 	int* grid_entries;
 	int* grid_cell;
-	/* Index of the volume constraint that first claimed each body, or -1. */
-	int* body_owner;
-	/* Distance constraint indices grouped by owning soft body. Group i lives in
-	   [offsets[i], offsets[i + 1]); the last group holds constraints that span
-	   soft bodies or belong to none, and is solved serially. */
-	int* distance_island_constraints;
-	int distance_island_offsets[PHYSICS_MAX_VOLUME_CONSTRAINTS + 2];
-	bool distance_islands_dirty;
-	bool volume_bodies_shared;
 	int substeps;
 	int solver_iterations;
 	float gravity;
@@ -127,21 +134,30 @@ static void physicsDestroyWorkers(physics_t* physics);
 static void physicsParallelFor(physics_t* physics, int count, int min_items_per_thread,
 	physics_parallel_func_t func, float delta_seconds, float inverse_dt_squared);
 static void physicsRunParallelChunk(physics_t* physics);
-static void physicsPredictBodiesRange(physics_t* physics, int start, int end,
+static void physicsPredictRange(physics_t* physics, int start, int end,
 	float delta_seconds, float inverse_dt_squared);
 static void physicsSolveIslandsRange(physics_t* physics, int start, int end,
 	float delta_seconds, float inverse_dt_squared);
 static void physicsReconstructVelocitiesRange(physics_t* physics, int start, int end,
 	float delta_seconds, float inverse_dt_squared);
 static void physicsResetLambdas(physics_t* physics);
+static int physicsDistanceIsland(physics_t* physics,
+	const physics_distance_constraint_t* constraint);
 static void physicsBuildDistanceIslands(physics_t* physics);
 static void physicsSolveDistanceIsland(physics_t* physics, int island,
 	float inverse_dt_squared);
+static void physicsSolveDistanceConstraint(physics_t* physics,
+	physics_distance_constraint_t* constraint, float inverse_dt_squared);
+static float physicsCalculateVolume(physics_t* physics,
+	const physics_volume_constraint_t* constraint);
+static void physicsSolveVolumeConstraint(physics_t* physics,
+	physics_volume_constraint_t* constraint, float inverse_dt_squared);
 static uint32_t physicsGridHash(int x, int y, int z);
-static void physicsAddContact(physics_t* physics, int body_a, int body_b);
+static void physicsAddContact(physics_t* physics, int particle_a, int particle_b);
 static void physicsDetectContacts(physics_t* physics, float delta_seconds);
 static void physicsSolveContacts(physics_t* physics, float inverse_dt_squared);
 static void physicsSolveContactVelocities(physics_t* physics, float delta_seconds);
+static bool physicsInvert3x3(const float m[9], float out[9]);
 static void physicsDampenDeformation(physics_t* physics, float delta_seconds);
 
 static int physicsWorkerFunc(void* user) {
@@ -235,28 +251,31 @@ static void physicsRunParallelChunk(physics_t* physics) {
 		physics->parallel_inverse_dt_squared);
 }
 
-static void physicsPredictBodiesRange(physics_t* physics, int start, int end,
+static void physicsPredictRange(physics_t* physics, int start, int end,
 	float delta_seconds, float inverse_dt_squared) {
 	(void)inverse_dt_squared;
+	vec3f_t* positions = physics->positions;
+	vec3f_t* velocities = physics->velocities;
+	const float gravity_step = physics->gravity * delta_seconds;
 	for (int i = start; i < end; ++i) {
-		physics_body_t* body = &physics->bodies[i];
-		body->previous_position = body->position;
-		if (body->inverse_mass == 0.0f) {
+		physics->previous_positions[i] = positions[i];
+		if (physics->inverse_masses[i] == 0.0f) {
 			continue;
 		}
-		body->velocity.y += physics->gravity * delta_seconds;
-		body->position = vec3fAdd(body->position, vec3fScale(body->velocity, delta_seconds));
+		velocities[i].y += gravity_step;
+		positions[i] = vec3fAdd(positions[i], vec3fScale(velocities[i], delta_seconds));
 	}
 }
 
 /* Each island is one soft body: its own distance constraints followed by its
-   volume constraint. Islands touch disjoint bodies, so they run in parallel. */
+   volume constraint. Islands touch disjoint particles, so they run in parallel. */
 static void physicsSolveIslandsRange(physics_t* physics, int start, int end,
 	float delta_seconds, float inverse_dt_squared) {
 	(void)delta_seconds;
 	for (int i = start; i < end; ++i) {
 		physicsSolveDistanceIsland(physics, i, inverse_dt_squared);
-		physicsSolveVolumeConstraint(&physics->volume_constraints[i], inverse_dt_squared);
+		physicsSolveVolumeConstraint(physics, &physics->volume_constraints[i],
+			inverse_dt_squared);
 	}
 }
 
@@ -265,8 +284,7 @@ static void physicsSolveDistanceIsland(physics_t* physics, int island,
 	const int begin = physics->distance_island_offsets[island];
 	const int end = physics->distance_island_offsets[island + 1];
 	for (int i = begin; i < end; ++i) {
-		physicsSolveDistanceConstraint(
-			&physics->distance_constraints[physics->distance_island_constraints[i]],
+		physicsSolveDistanceConstraint(physics, &physics->distance_constraints[i],
 			inverse_dt_squared);
 	}
 }
@@ -274,13 +292,13 @@ static void physicsSolveDistanceIsland(physics_t* physics, int island,
 static void physicsReconstructVelocitiesRange(physics_t* physics, int start, int end,
 	float delta_seconds, float inverse_dt_squared) {
 	(void)inverse_dt_squared;
+	const float inverse_dt = 1.0f / delta_seconds;
 	for (int i = start; i < end; ++i) {
-		physics_body_t* body = &physics->bodies[i];
-		if (body->inverse_mass == 0.0f) {
+		if (physics->inverse_masses[i] == 0.0f) {
 			continue;
 		}
-		body->velocity = vec3fScale(vec3fSub(body->position, body->previous_position),
-			1.0f / delta_seconds);
+		physics->velocities[i] = vec3fScale(
+			vec3fSub(physics->positions[i], physics->previous_positions[i]), inverse_dt);
 	}
 }
 
@@ -296,36 +314,114 @@ static void physicsResetLambdas(physics_t* physics) {
 	}
 }
 
-/* Stable counting sort of distance constraints by owning soft body, so each
-   island keeps the original Gauss-Seidel order. Rebuilt only after constraints
-   are added. */
+static int physicsDistanceIsland(physics_t* physics,
+	const physics_distance_constraint_t* constraint) {
+	const int owner_a = physics->particle_owner[constraint->particle_a];
+	const int owner_b = physics->particle_owner[constraint->particle_b];
+	return (owner_a >= 0 && owner_a == owner_b && !physics->volume_particles_shared) ?
+		owner_a : physics->volume_constraint_count;
+}
+
+/* Stable counting sort of the distance constraints by owning soft body, so each
+   island is contiguous and keeps the original Gauss-Seidel order. Runs only
+   after constraints are added. */
 static void physicsBuildDistanceIslands(physics_t* physics) {
 	const int island_count = physics->volume_constraint_count;
-	const int loose = island_count;
+	const int count = physics->distance_constraint_count;
 	int* offsets = physics->distance_island_offsets;
 	for (int i = 0; i <= island_count + 1; ++i) offsets[i] = 0;
-
-	for (int i = 0; i < physics->distance_constraint_count; ++i) {
-		physics_distance_constraint_t* constraint = &physics->distance_constraints[i];
-		const int owner_a = physics->body_owner[constraint->body_a - physics->bodies];
-		const int owner_b = physics->body_owner[constraint->body_b - physics->bodies];
-		const int island = (owner_a >= 0 && owner_a == owner_b && !physics->volume_bodies_shared) ?
-			owner_a : loose;
-		offsets[island + 1]++;
+	for (int i = 0; i < count; ++i) {
+		offsets[physicsDistanceIsland(physics, &physics->distance_constraints[i]) + 1]++;
 	}
 	for (int i = 0; i <= island_count; ++i) offsets[i + 1] += offsets[i];
 
+	physics_distance_constraint_t* sorted = heapAlloc(physics->heap,
+		sizeof(physics_distance_constraint_t) * __max(count, 1),
+		_Alignof(physics_distance_constraint_t));
 	int cursor[PHYSICS_MAX_VOLUME_CONSTRAINTS + 1];
 	for (int i = 0; i <= island_count; ++i) cursor[i] = offsets[i];
-	for (int i = 0; i < physics->distance_constraint_count; ++i) {
-		physics_distance_constraint_t* constraint = &physics->distance_constraints[i];
-		const int owner_a = physics->body_owner[constraint->body_a - physics->bodies];
-		const int owner_b = physics->body_owner[constraint->body_b - physics->bodies];
-		const int island = (owner_a >= 0 && owner_a == owner_b && !physics->volume_bodies_shared) ?
-			owner_a : loose;
-		physics->distance_island_constraints[cursor[island]++] = i;
+	for (int i = 0; i < count; ++i) {
+		const physics_distance_constraint_t* constraint = &physics->distance_constraints[i];
+		sorted[cursor[physicsDistanceIsland(physics, constraint)]++] = *constraint;
 	}
+	memcpy(physics->distance_constraints, sorted, sizeof(physics_distance_constraint_t) * count);
+	heapFree(physics->heap, sorted);
 	physics->distance_islands_dirty = false;
+}
+
+static void physicsSolveDistanceConstraint(physics_t* physics,
+	physics_distance_constraint_t* constraint, float inverse_dt_squared) {
+	const physics_particle_id_t a = constraint->particle_a;
+	const physics_particle_id_t b = constraint->particle_b;
+	const float inverse_mass_a = physics->inverse_masses[a];
+	const float inverse_mass_b = physics->inverse_masses[b];
+	const float inverse_mass_sum = inverse_mass_a + inverse_mass_b;
+	vec3f_t* positions = physics->positions;
+	vec3f_t delta = vec3fSub(positions[a], positions[b]);
+	const float length = vec3fMagnitude(delta);
+	if (length < 1.0e-6f || inverse_mass_sum == 0.0f) {
+		return;
+	}
+
+	const vec3f_t gradient = vec3fScale(delta, 1.0f / length);
+	const float constraint_value = length - constraint->rest_length;
+	const float alpha_tilde = constraint->compliance * inverse_dt_squared;
+	const float delta_lambda = (-constraint_value - alpha_tilde * constraint->lambda) /
+		(inverse_mass_sum + alpha_tilde);
+	constraint->lambda += delta_lambda;
+	positions[a] = vec3fAdd(positions[a], vec3fScale(gradient, inverse_mass_a * delta_lambda));
+	positions[b] = vec3fSub(positions[b], vec3fScale(gradient, inverse_mass_b * delta_lambda));
+}
+
+static float physicsCalculateVolume(physics_t* physics,
+	const physics_volume_constraint_t* constraint) {
+	const vec3f_t* positions = physics->positions + constraint->first_particle;
+	float volume = 0.0f;
+	for (int i = 0; i < constraint->index_count; i += 3) {
+		vec3f_t a = positions[constraint->indices[i]];
+		vec3f_t b = positions[constraint->indices[i + 1]];
+		vec3f_t c = positions[constraint->indices[i + 2]];
+		volume += vec3fDot(a, vec3fCross(b, c)) / 6.0f;
+	}
+	return volume;
+}
+
+static void physicsSolveVolumeConstraint(physics_t* physics,
+	physics_volume_constraint_t* constraint, float inverse_dt_squared) {
+	vec3f_t* positions = physics->positions + constraint->first_particle;
+	const float* inverse_masses = physics->inverse_masses + constraint->first_particle;
+	vec3f_t* gradients = constraint->gradients;
+	for (int i = 0; i < constraint->particle_count; ++i) gradients[i] = vec3fZero();
+	float volume = 0.0f;
+	for (int i = 0; i < constraint->index_count; i += 3) {
+		uint16_t ia = constraint->indices[i];
+		uint16_t ib = constraint->indices[i + 1];
+		uint16_t ic = constraint->indices[i + 2];
+		vec3f_t a = positions[ia];
+		vec3f_t b = positions[ib];
+		vec3f_t c = positions[ic];
+		volume += vec3fDot(a, vec3fCross(b, c)) / 6.0f;
+		gradients[ia] = vec3fAdd(gradients[ia], vec3fScale(vec3fCross(b, c), 1.0f / 6.0f));
+		gradients[ib] = vec3fAdd(gradients[ib], vec3fScale(vec3fCross(c, a), 1.0f / 6.0f));
+		gradients[ic] = vec3fAdd(gradients[ic], vec3fScale(vec3fCross(a, b), 1.0f / 6.0f));
+	}
+
+	float denominator = 0.0f;
+	for (int i = 0; i < constraint->particle_count; ++i) {
+		denominator += inverse_masses[i] * vec3fMagnitudeSqrd(gradients[i]);
+	}
+	const float alpha_tilde = constraint->compliance * inverse_dt_squared;
+	if (denominator + alpha_tilde <= 1.0e-8f) {
+		return;
+	}
+	const float constraint_value = volume - constraint->rest_volume;
+	const float delta_lambda = (-constraint_value - alpha_tilde * constraint->lambda) /
+		(denominator + alpha_tilde);
+	constraint->lambda += delta_lambda;
+	for (int i = 0; i < constraint->particle_count; ++i) {
+		positions[i] = vec3fAdd(positions[i],
+			vec3fScale(gradients[i], inverse_masses[i] * delta_lambda));
+	}
 }
 
 static uint32_t physicsGridHash(int x, int y, int z) {
@@ -335,7 +431,7 @@ static uint32_t physicsGridHash(int x, int y, int z) {
 	return hash & (PHYSICS_GRID_TABLE_SIZE - 1);
 }
 
-static void physicsAddContact(physics_t* physics, int body_a, int body_b) {
+static void physicsAddContact(physics_t* physics, int particle_a, int particle_b) {
 	if (physics->contact_count >= PHYSICS_MAX_CONTACTS) {
 		if (!physics->contact_overflow_reported) {
 			debugPrint(DEBUG_PRINT_WARNING, "Physics: contact capacity reached, dropping contacts.\n");
@@ -344,8 +440,8 @@ static void physicsAddContact(physics_t* physics, int body_a, int body_b) {
 		return;
 	}
 	physics_contact_t* contact = &physics->contacts[physics->contact_count++];
-	contact->body_a = body_a;
-	contact->body_b = body_b;
+	contact->particle_a = particle_a;
+	contact->particle_b = particle_b;
 	contact->normal = vec3fY();
 	contact->lambda = 0.0f;
 	contact->normal_speed_before = 0.0f;
@@ -356,24 +452,27 @@ static void physicsAddContact(physics_t* physics, int body_a, int body_b) {
    its distance and volume constraints already keep its particles apart. */
 static void physicsDetectContacts(physics_t* physics, float delta_seconds) {
 	physics->contact_count = 0;
-	const int count = physics->body_count;
+	const int count = physics->particle_count;
 	if (count == 0) {
 		return;
 	}
+	const vec3f_t* positions = physics->positions;
+	const vec3f_t* velocities = physics->velocities;
+	const float* radii = physics->radii;
+	const float* inverse_masses = physics->inverse_masses;
 
 	float max_speed = 0.0f;
 	for (int i = 0; i < count; ++i) {
-		max_speed = __max(max_speed, vec3fMagnitude(physics->bodies[i].velocity));
+		max_speed = __max(max_speed, vec3fMagnitude(velocities[i]));
 	}
 	const float gravity_travel = fabsf(physics->gravity) * delta_seconds * delta_seconds;
 
 	/* The ground needs no grid: pad each particle by its own possible travel. */
 	for (int i = 0; i < count; ++i) {
-		physics_body_t* body = &physics->bodies[i];
-		if (body->inverse_mass == 0.0f) continue;
-		const float margin = vec3fMagnitude(body->velocity) * delta_seconds + gravity_travel;
-		if (body->position.y - body->radius - physics->ground_height < margin) {
-			physicsAddContact(physics, i, PHYSICS_GROUND_BODY);
+		if (inverse_masses[i] == 0.0f) continue;
+		const float margin = vec3fMagnitude(velocities[i]) * delta_seconds + gravity_travel;
+		if (positions[i].y - radii[i] - physics->ground_height < margin) {
+			physicsAddContact(physics, i, PHYSICS_GROUND);
 		}
 	}
 
@@ -391,10 +490,9 @@ static void physicsDetectContacts(physics_t* physics, float delta_seconds) {
 	int* cell = physics->grid_cell;
 	memset(start, 0, sizeof(int) * (PHYSICS_GRID_TABLE_SIZE + 1));
 	for (int i = 0; i < count; ++i) {
-		vec3f_t position = physics->bodies[i].position;
-		cell[i * 3] = (int)floorf(position.x * inverse_cell_size);
-		cell[i * 3 + 1] = (int)floorf(position.y * inverse_cell_size);
-		cell[i * 3 + 2] = (int)floorf(position.z * inverse_cell_size);
+		cell[i * 3] = (int)floorf(positions[i].x * inverse_cell_size);
+		cell[i * 3 + 1] = (int)floorf(positions[i].y * inverse_cell_size);
+		cell[i * 3 + 2] = (int)floorf(positions[i].z * inverse_cell_size);
 		start[physicsGridHash(cell[i * 3], cell[i * 3 + 1], cell[i * 3 + 2])]++;
 	}
 	int running = 0;
@@ -409,8 +507,7 @@ static void physicsDetectContacts(physics_t* physics, float delta_seconds) {
 	}
 
 	for (int i = 0; i < count; ++i) {
-		physics_body_t* a = &physics->bodies[i];
-		const int owner = physics->body_owner[i];
+		const int owner = physics->particle_owner[i];
 		for (int z = cell[i * 3 + 2] - 1; z <= cell[i * 3 + 2] + 1; ++z) {
 		for (int y = cell[i * 3 + 1] - 1; y <= cell[i * 3 + 1] + 1; ++y) {
 		for (int x = cell[i * 3] - 1; x <= cell[i * 3] + 1; ++x) {
@@ -421,11 +518,10 @@ static void physicsDetectContacts(physics_t* physics, float delta_seconds) {
 				   only share the bucket, which would otherwise be found twice. */
 				if (j <= i || cell[j * 3] != x || cell[j * 3 + 1] != y ||
 					cell[j * 3 + 2] != z) continue;
-				if (owner >= 0 && owner == physics->body_owner[j]) continue;
-				physics_body_t* b = &physics->bodies[j];
-				if (a->inverse_mass + b->inverse_mass == 0.0f) continue;
-				const float reach = a->radius + b->radius + margin;
-				if (vec3fMagnitudeSqrd(vec3fSub(a->position, b->position)) < reach * reach) {
+				if (owner >= 0 && owner == physics->particle_owner[j]) continue;
+				if (inverse_masses[i] + inverse_masses[j] == 0.0f) continue;
+				const float reach = radii[i] + radii[j] + margin;
+				if (vec3fMagnitudeSqrd(vec3fSub(positions[i], positions[j])) < reach * reach) {
 					physicsAddContact(physics, i, j);
 				}
 			}
@@ -439,22 +535,26 @@ static void physicsDetectContacts(physics_t* physics, float delta_seconds) {
    at the position level: if the tangential slip this substep could be held by
    the normal force, it is undone. */
 static void physicsSolveContacts(physics_t* physics, float inverse_dt_squared) {
+	vec3f_t* positions = physics->positions;
+	const vec3f_t* previous_positions = physics->previous_positions;
+	const vec3f_t* velocities = physics->velocities;
 	for (int c = 0; c < physics->contact_count; ++c) {
 		physics_contact_t* contact = &physics->contacts[c];
-		physics_body_t* a = &physics->bodies[contact->body_a];
-		physics_body_t* b = contact->body_b == PHYSICS_GROUND_BODY ? NULL :
-			&physics->bodies[contact->body_b];
-		const float inverse_mass_b = b ? b->inverse_mass : 0.0f;
-		const float inverse_mass_sum = a->inverse_mass + inverse_mass_b;
+		const int a = contact->particle_a;
+		const int b = contact->particle_b;
+		const bool ground = b == PHYSICS_GROUND;
+		const float inverse_mass_a = physics->inverse_masses[a];
+		const float inverse_mass_b = ground ? 0.0f : physics->inverse_masses[b];
+		const float inverse_mass_sum = inverse_mass_a + inverse_mass_b;
 		if (inverse_mass_sum == 0.0f) continue;
 
 		vec3f_t normal;
 		float constraint_value;
 		float compliance;
-		if (b) {
-			vec3f_t delta = vec3fSub(a->position, b->position);
+		if (!ground) {
+			vec3f_t delta = vec3fSub(positions[a], positions[b]);
 			const float distance_squared = vec3fMagnitudeSqrd(delta);
-			const float minimum_distance = a->radius + b->radius;
+			const float minimum_distance = physics->radii[a] + physics->radii[b];
 			if (distance_squared >= minimum_distance * minimum_distance) continue;
 			const float distance = sqrtf(distance_squared);
 			normal = distance > 1.0e-6f ? vec3fScale(delta, 1.0f / distance) : vec3fY();
@@ -463,7 +563,7 @@ static void physicsSolveContacts(physics_t* physics, float inverse_dt_squared) {
 		}
 		else {
 			normal = vec3fY();
-			constraint_value = a->position.y - a->radius - physics->ground_height;
+			constraint_value = positions[a].y - physics->radii[a] - physics->ground_height;
 			if (constraint_value >= 0.0f) continue;
 			compliance = physics->ground_compliance;
 		}
@@ -471,7 +571,8 @@ static void physicsSolveContacts(physics_t* physics, float inverse_dt_squared) {
 		/* Velocities still hold the predicted values during the position solve,
 		   so this is the approach speed restitution is measured against. */
 		if (contact->lambda == 0.0f) {
-			vec3f_t relative_velocity = b ? vec3fSub(a->velocity, b->velocity) : a->velocity;
+			vec3f_t relative_velocity = ground ? velocities[a] :
+				vec3fSub(velocities[a], velocities[b]);
 			contact->normal_speed_before = vec3fDot(relative_velocity, normal);
 		}
 
@@ -480,23 +581,23 @@ static void physicsSolveContacts(physics_t* physics, float inverse_dt_squared) {
 			(inverse_mass_sum + alpha_tilde);
 		contact->lambda += delta_lambda;
 		contact->normal = normal;
-		a->position = vec3fAdd(a->position, vec3fScale(normal, delta_lambda * a->inverse_mass));
-		if (b) {
-			b->position = vec3fSub(b->position, vec3fScale(normal, delta_lambda * b->inverse_mass));
+		positions[a] = vec3fAdd(positions[a], vec3fScale(normal, delta_lambda * inverse_mass_a));
+		if (!ground) {
+			positions[b] = vec3fSub(positions[b], vec3fScale(normal, delta_lambda * inverse_mass_b));
 		}
 
-		vec3f_t slip = vec3fSub(a->position, a->previous_position);
-		if (b) {
-			slip = vec3fSub(slip, vec3fSub(b->position, b->previous_position));
+		vec3f_t slip = vec3fSub(positions[a], previous_positions[a]);
+		if (!ground) {
+			slip = vec3fSub(slip, vec3fSub(positions[b], previous_positions[b]));
 		}
 		const vec3f_t tangential_slip = vec3fSub(slip,
 			vec3fScale(normal, vec3fDot(slip, normal)));
 		const float tangential_lambda = vec3fMagnitude(tangential_slip) / inverse_mass_sum;
 		if (tangential_lambda < physics->static_friction * contact->lambda) {
 			const vec3f_t correction = vec3fScale(tangential_slip, 1.0f / inverse_mass_sum);
-			a->position = vec3fSub(a->position, vec3fScale(correction, a->inverse_mass));
-			if (b) {
-				b->position = vec3fAdd(b->position, vec3fScale(correction, b->inverse_mass));
+			positions[a] = vec3fSub(positions[a], vec3fScale(correction, inverse_mass_a));
+			if (!ground) {
+				positions[b] = vec3fAdd(positions[b], vec3fScale(correction, inverse_mass_b));
 			}
 		}
 	}
@@ -504,19 +605,22 @@ static void physicsSolveContacts(physics_t* physics, float inverse_dt_squared) {
 
 /* Dynamic friction and restitution, applied to contacts that pushed this substep. */
 static void physicsSolveContactVelocities(physics_t* physics, float delta_seconds) {
+	vec3f_t* velocities = physics->velocities;
 	const float rest_speed = 2.0f * fabsf(physics->gravity) * delta_seconds;
 	for (int c = 0; c < physics->contact_count; ++c) {
 		physics_contact_t* contact = &physics->contacts[c];
 		if (contact->lambda <= 0.0f) continue;
-		physics_body_t* a = &physics->bodies[contact->body_a];
-		physics_body_t* b = contact->body_b == PHYSICS_GROUND_BODY ? NULL :
-			&physics->bodies[contact->body_b];
-		const float inverse_mass_b = b ? b->inverse_mass : 0.0f;
-		const float inverse_mass_sum = a->inverse_mass + inverse_mass_b;
+		const int a = contact->particle_a;
+		const int b = contact->particle_b;
+		const bool ground = b == PHYSICS_GROUND;
+		const float inverse_mass_a = physics->inverse_masses[a];
+		const float inverse_mass_b = ground ? 0.0f : physics->inverse_masses[b];
+		const float inverse_mass_sum = inverse_mass_a + inverse_mass_b;
 		if (inverse_mass_sum == 0.0f) continue;
 
 		const vec3f_t normal = contact->normal;
-		const vec3f_t relative_velocity = b ? vec3fSub(a->velocity, b->velocity) : a->velocity;
+		const vec3f_t relative_velocity = ground ? velocities[a] :
+			vec3fSub(velocities[a], velocities[b]);
 		const float normal_speed = vec3fDot(relative_velocity, normal);
 		const vec3f_t tangential_velocity = vec3fSub(relative_velocity,
 			vec3fScale(normal, normal_speed));
@@ -537,9 +641,9 @@ static void physicsSolveContactVelocities(physics_t* physics, float delta_second
 			vec3fScale(normal, target_normal_speed - normal_speed));
 
 		const vec3f_t impulse = vec3fScale(velocity_change, 1.0f / inverse_mass_sum);
-		a->velocity = vec3fAdd(a->velocity, vec3fScale(impulse, a->inverse_mass));
-		if (b) {
-			b->velocity = vec3fSub(b->velocity, vec3fScale(impulse, b->inverse_mass));
+		velocities[a] = vec3fAdd(velocities[a], vec3fScale(impulse, inverse_mass_a));
+		if (!ground) {
+			velocities[b] = vec3fSub(velocities[b], vec3fScale(impulse, inverse_mass_b));
 		}
 	}
 }
@@ -575,28 +679,29 @@ static void physicsDampenDeformation(physics_t* physics, float delta_seconds) {
 		physics_volume_constraint_t* constraint = &physics->volume_constraints[constraint_idx];
 		if (constraint->velocity_retention >= 1.0f || constraint->total_mass <= 0.0f) continue;
 		const float retention = powf(constraint->velocity_retention, delta_seconds * 60.0f);
+		const vec3f_t* positions = physics->positions + constraint->first_particle;
+		vec3f_t* velocities = physics->velocities + constraint->first_particle;
+		const float* inverse_masses = physics->inverse_masses + constraint->first_particle;
 
 		vec3f_t center = vec3fZero();
 		vec3f_t center_velocity = vec3fZero();
-		for (int i = 0; i < constraint->body_count; ++i) {
-			physics_body_t* body = constraint->bodies[i];
-			if (body->inverse_mass <= 0.0f) continue;
-			const float mass = 1.0f / body->inverse_mass;
-			center = vec3fAdd(center, vec3fScale(body->position, mass));
-			center_velocity = vec3fAdd(center_velocity, vec3fScale(body->velocity, mass));
+		for (int i = 0; i < constraint->particle_count; ++i) {
+			if (inverse_masses[i] <= 0.0f) continue;
+			const float mass = 1.0f / inverse_masses[i];
+			center = vec3fAdd(center, vec3fScale(positions[i], mass));
+			center_velocity = vec3fAdd(center_velocity, vec3fScale(velocities[i], mass));
 		}
 		center = vec3fScale(center, 1.0f / constraint->total_mass);
 		center_velocity = vec3fScale(center_velocity, 1.0f / constraint->total_mass);
 
 		vec3f_t angular_momentum = vec3fZero();
 		float inertia[9] = { 0 };
-		for (int i = 0; i < constraint->body_count; ++i) {
-			physics_body_t* body = constraint->bodies[i];
-			if (body->inverse_mass <= 0.0f) continue;
-			const float mass = 1.0f / body->inverse_mass;
-			const vec3f_t r = vec3fSub(body->position, center);
+		for (int i = 0; i < constraint->particle_count; ++i) {
+			if (inverse_masses[i] <= 0.0f) continue;
+			const float mass = 1.0f / inverse_masses[i];
+			const vec3f_t r = vec3fSub(positions[i], center);
 			angular_momentum = vec3fAdd(angular_momentum,
-				vec3fScale(vec3fCross(r, body->velocity), mass));
+				vec3fScale(vec3fCross(r, velocities[i]), mass));
 			const float r_squared = vec3fMagnitudeSqrd(r);
 			inertia[0] += mass * (r_squared - r.x * r.x);
 			inertia[4] += mass * (r_squared - r.y * r.y);
@@ -621,14 +726,13 @@ static void physicsDampenDeformation(physics_t* physics, float delta_seconds) {
 			};
 		}
 
-		for (int i = 0; i < constraint->body_count; ++i) {
-			physics_body_t* body = constraint->bodies[i];
-			if (body->inverse_mass <= 0.0f) continue;
-			const vec3f_t r = vec3fSub(body->position, center);
+		for (int i = 0; i < constraint->particle_count; ++i) {
+			if (inverse_masses[i] <= 0.0f) continue;
+			const vec3f_t r = vec3fSub(positions[i], center);
 			const vec3f_t rigid_velocity = vec3fAdd(center_velocity,
 				vec3fCross(angular_velocity, r));
-			const vec3f_t deformation = vec3fSub(body->velocity, rigid_velocity);
-			body->velocity = vec3fAdd(rigid_velocity, vec3fScale(deformation, retention));
+			const vec3f_t deformation = vec3fSub(velocities[i], rigid_velocity);
+			velocities[i] = vec3fAdd(rigid_velocity, vec3fScale(deformation, retention));
 		}
 	}
 }
@@ -637,8 +741,13 @@ static void physicsDampenDeformation(physics_t* physics, float delta_seconds) {
 physics_t* physicsCreate(heap_t* heap) {
 	physics_t* phys = heapAlloc(heap, sizeof(physics_t), 8);
 	phys->heap = heap;
-	phys->bodies = heapAlloc(heap, sizeof(physics_body_t) * PHYSICS_MAX_BODIES,
-		_Alignof(physics_body_t));
+	phys->positions = heapAlloc(heap, sizeof(vec3f_t) * PHYSICS_MAX_PARTICLES, _Alignof(vec3f_t));
+	phys->previous_positions = heapAlloc(heap, sizeof(vec3f_t) * PHYSICS_MAX_PARTICLES,
+		_Alignof(vec3f_t));
+	phys->velocities = heapAlloc(heap, sizeof(vec3f_t) * PHYSICS_MAX_PARTICLES, _Alignof(vec3f_t));
+	phys->inverse_masses = heapAlloc(heap, sizeof(float) * PHYSICS_MAX_PARTICLES, _Alignof(float));
+	phys->radii = heapAlloc(heap, sizeof(float) * PHYSICS_MAX_PARTICLES, _Alignof(float));
+	phys->particle_owner = heapAlloc(heap, sizeof(int) * PHYSICS_MAX_PARTICLES, _Alignof(int));
 	phys->distance_constraints = heapAlloc(heap,
 		sizeof(physics_distance_constraint_t) * PHYSICS_MAX_DISTANCE_CONSTRAINTS,
 		_Alignof(physics_distance_constraint_t));
@@ -649,20 +758,17 @@ physics_t* physicsCreate(heap_t* heap) {
 		_Alignof(physics_contact_t));
 	phys->grid_start = heapAlloc(heap, sizeof(int) * (PHYSICS_GRID_TABLE_SIZE + 1),
 		_Alignof(int));
-	phys->grid_entries = heapAlloc(heap, sizeof(int) * PHYSICS_MAX_BODIES, _Alignof(int));
-	phys->grid_cell = heapAlloc(heap, sizeof(int) * 3 * PHYSICS_MAX_BODIES, _Alignof(int));
-	phys->body_owner = heapAlloc(heap, sizeof(int) * PHYSICS_MAX_BODIES, _Alignof(int));
-	phys->distance_island_constraints = heapAlloc(heap,
-		sizeof(int) * PHYSICS_MAX_DISTANCE_CONSTRAINTS, _Alignof(int));
+	phys->grid_entries = heapAlloc(heap, sizeof(int) * PHYSICS_MAX_PARTICLES, _Alignof(int));
+	phys->grid_cell = heapAlloc(heap, sizeof(int) * 3 * PHYSICS_MAX_PARTICLES, _Alignof(int));
 	for (int i = 0; i < PHYSICS_MAX_VOLUME_CONSTRAINTS + 2; ++i) {
 		phys->distance_island_offsets[i] = 0;
 	}
-	phys->distance_islands_dirty = false;
-	phys->volume_bodies_shared = false;
-	phys->body_count = 0;
+	phys->particle_count = 0;
 	phys->max_radius = 0.0f;
 	phys->distance_constraint_count = 0;
+	phys->distance_islands_dirty = false;
 	phys->volume_constraint_count = 0;
+	phys->volume_particles_shared = false;
 	phys->contact_count = 0;
 	phys->contact_overflow_reported = false;
 	phys->gravity = -9.81f;
@@ -713,85 +819,108 @@ void physicsDestroy(physics_t* physics) {
 		physicsDestroyWorkers(physics);
 		for (int i = 0; i < physics->volume_constraint_count; ++i) {
 			heapFree(physics->heap, physics->volume_constraints[i].indices);
-			heapFree(physics->heap, physics->volume_constraints[i].bodies);
 			heapFree(physics->heap, physics->volume_constraints[i].gradients);
 		}
-		heapFree(physics->heap, physics->distance_island_constraints);
-		heapFree(physics->heap, physics->body_owner);
 		heapFree(physics->heap, physics->grid_cell);
 		heapFree(physics->heap, physics->grid_entries);
 		heapFree(physics->heap, physics->grid_start);
 		heapFree(physics->heap, physics->contacts);
 		heapFree(physics->heap, physics->volume_constraints);
 		heapFree(physics->heap, physics->distance_constraints);
-		heapFree(physics->heap, physics->bodies);
+		heapFree(physics->heap, physics->particle_owner);
+		heapFree(physics->heap, physics->radii);
+		heapFree(physics->heap, physics->inverse_masses);
+		heapFree(physics->heap, physics->velocities);
+		heapFree(physics->heap, physics->previous_positions);
+		heapFree(physics->heap, physics->positions);
 		heapFree(physics->heap, physics);
 	}
 }
 
-physics_body_t* physicsAddParticle(physics_t* physics, vec3f_t position,
+physics_particle_id_t physicsAddParticle(physics_t* physics, vec3f_t position,
 	float radius, float mass) {
-	assert(physics->body_count < PHYSICS_MAX_BODIES);
-	physics_body_t* body = &physics->bodies[physics->body_count++];
-	body->position = position;
-	body->previous_position = position;
-	body->velocity = vec3fZero();
-	body->radius = __max(0.0f, radius);
-	body->inverse_mass = mass > 0.0f ? 1.0f / mass : 0.0f;
-	physics->body_owner[physics->body_count - 1] = -1;
-	physics->max_radius = __max(physics->max_radius, body->radius);
-	return body;
+	assert(physics->particle_count < PHYSICS_MAX_PARTICLES);
+	const physics_particle_id_t id = (physics_particle_id_t)physics->particle_count++;
+	physics->positions[id] = position;
+	physics->previous_positions[id] = position;
+	physics->velocities[id] = vec3fZero();
+	physics->radii[id] = __max(0.0f, radius);
+	physics->inverse_masses[id] = mass > 0.0f ? 1.0f / mass : 0.0f;
+	physics->particle_owner[id] = -1;
+	physics->max_radius = __max(physics->max_radius, physics->radii[id]);
+	return id;
 }
 
-physics_distance_constraint_t* physicsAddDistanceConstraint(physics_t* physics,
-	physics_body_t* body_a, physics_body_t* body_b, float rest_length, float compliance) {
+vec3f_t physicsGetParticlePosition(physics_t* physics, physics_particle_id_t particle) {
+	return physics->positions[particle];
+}
+
+vec3f_t physicsGetParticleVelocity(physics_t* physics, physics_particle_id_t particle) {
+	return physics->velocities[particle];
+}
+
+void physicsSetParticleVelocity(physics_t* physics, physics_particle_id_t particle,
+	vec3f_t velocity) {
+	physics->velocities[particle] = velocity;
+}
+
+float physicsGetParticleRadius(physics_t* physics, physics_particle_id_t particle) {
+	return physics->radii[particle];
+}
+
+const vec3f_t* physicsGetParticlePositions(physics_t* physics) {
+	return physics->positions;
+}
+
+void physicsAddDistanceConstraint(physics_t* physics, physics_particle_id_t particle_a,
+	physics_particle_id_t particle_b, float rest_length, float compliance) {
 	assert(physics->distance_constraint_count < PHYSICS_MAX_DISTANCE_CONSTRAINTS);
+	assert((int)particle_a < physics->particle_count && (int)particle_b < physics->particle_count);
 	physics_distance_constraint_t* constraint =
 		&physics->distance_constraints[physics->distance_constraint_count++];
-	constraint->body_a = body_a;
-	constraint->body_b = body_b;
+	constraint->particle_a = particle_a;
+	constraint->particle_b = particle_b;
 	constraint->rest_length = rest_length;
 	constraint->compliance = __max(0.0f, compliance);
 	constraint->lambda = 0.0f;
 	physics->distance_islands_dirty = true;
-	return constraint;
 }
 
 physics_volume_constraint_t* physicsAddVolumeConstraint(physics_t* physics,
-	physics_body_t** bodies, int body_count, const uint16_t* indices,
+	physics_particle_id_t first_particle, int particle_count, const uint16_t* indices,
 	int index_count, float compliance) {
 	assert(physics->volume_constraint_count < PHYSICS_MAX_VOLUME_CONSTRAINTS);
-	assert(body_count <= PHYSICS_MAX_BODIES && index_count <= PHYSICS_MAX_VOLUME_INDICES);
+	assert(index_count <= PHYSICS_MAX_VOLUME_INDICES);
+	assert((int)first_particle + particle_count <= physics->particle_count);
 	physics_volume_constraint_t* constraint =
 		&physics->volume_constraints[physics->volume_constraint_count++];
-	constraint->bodies = heapAlloc(physics->heap, sizeof(physics_body_t*) * body_count,
-		_Alignof(physics_body_t*));
+	constraint->first_particle = first_particle;
+	constraint->particle_count = particle_count;
 	constraint->indices = heapAlloc(physics->heap, sizeof(uint16_t) * index_count,
 		_Alignof(uint16_t));
-	for (int i = 0; i < body_count; ++i) constraint->bodies[i] = bodies[i];
 	for (int i = 0; i < index_count; ++i) constraint->indices[i] = indices[i];
-	constraint->gradients = heapAlloc(physics->heap, sizeof(vec3f_t) * body_count,
+	constraint->gradients = heapAlloc(physics->heap, sizeof(vec3f_t) * particle_count,
 		_Alignof(vec3f_t));
-	constraint->body_count = body_count;
 	constraint->index_count = index_count;
 	constraint->compliance = __max(0.0f, compliance);
 	constraint->velocity_retention = 1.0f;
 	constraint->lambda = 0.0f;
-	constraint->rest_volume = physicsCalculateVolume(constraint);
+	constraint->rest_volume = physicsCalculateVolume(physics, constraint);
 	constraint->total_mass = 0.0f;
-	for (int i = 0; i < body_count; ++i) {
-		if (bodies[i]->inverse_mass > 0.0f)
-			constraint->total_mass += 1.0f / bodies[i]->inverse_mass;
+	for (int i = 0; i < particle_count; ++i) {
+		const float inverse_mass = physics->inverse_masses[first_particle + i];
+		if (inverse_mass > 0.0f)
+			constraint->total_mass += 1.0f / inverse_mass;
 	}
 
 	const int owner = physics->volume_constraint_count - 1;
-	for (int i = 0; i < body_count; ++i) {
-		int* body_owner = &physics->body_owner[bodies[i] - physics->bodies];
-		if (*body_owner >= 0 && *body_owner != owner) {
-			physics->volume_bodies_shared = true;
+	for (int i = 0; i < particle_count; ++i) {
+		int* particle_owner = &physics->particle_owner[first_particle + i];
+		if (*particle_owner >= 0 && *particle_owner != owner) {
+			physics->volume_particles_shared = true;
 		}
 		else {
-			*body_owner = owner;
+			*particle_owner = owner;
 		}
 	}
 	physics->distance_islands_dirty = true;
@@ -832,9 +961,9 @@ void physicsSetRestitution(physics_t* physics, float restitution) {
 	physics->restitution = __max(0.0f, __min(restitution, 1.0f));
 }
 
-bool physicsHasCapacity(physics_t* physics, int body_count,
+bool physicsHasCapacity(physics_t* physics, int particle_count,
 	int distance_constraint_count, int volume_constraint_count) {
-	return physics->body_count + body_count <= PHYSICS_MAX_BODIES &&
+	return physics->particle_count + particle_count <= PHYSICS_MAX_PARTICLES &&
 		physics->distance_constraint_count + distance_constraint_count <=
 			PHYSICS_MAX_DISTANCE_CONSTRAINTS &&
 		physics->volume_constraint_count + volume_constraint_count <=
@@ -858,14 +987,14 @@ void physicsUpdate(physics_t* physics, float delta_seconds) {
 	const float inverse_dt_squared = 1.0f / (substep_seconds * substep_seconds);
 	const int island_count = physics->volume_constraint_count;
 	for (int substep = 0; substep < physics->substeps; ++substep) {
-		physicsParallelFor(physics, physics->body_count, PHYSICS_MIN_BODY_WORK_PER_THREAD,
-			physicsPredictBodiesRange, substep_seconds, 0.0f);
+		physicsParallelFor(physics, physics->particle_count, PHYSICS_MIN_PARTICLE_WORK_PER_THREAD,
+			physicsPredictRange, substep_seconds, 0.0f);
 		physicsResetLambdas(physics);
 
 		for (int iteration = 0; iteration < physics->solver_iterations; ++iteration) {
 			/* Constraints that span soft bodies (the last island) go first, serially. */
 			physicsSolveDistanceIsland(physics, island_count, inverse_dt_squared);
-			if (physics->volume_bodies_shared) {
+			if (physics->volume_particles_shared) {
 				physicsSolveIslandsRange(physics, 0, island_count, 0.0f, inverse_dt_squared);
 			}
 			else {
@@ -875,76 +1004,9 @@ void physicsUpdate(physics_t* physics, float delta_seconds) {
 			physicsSolveContacts(physics, inverse_dt_squared);
 		}
 
-		physicsParallelFor(physics, physics->body_count, PHYSICS_MIN_BODY_WORK_PER_THREAD,
+		physicsParallelFor(physics, physics->particle_count, PHYSICS_MIN_PARTICLE_WORK_PER_THREAD,
 			physicsReconstructVelocitiesRange, substep_seconds, 0.0f);
 		physicsSolveContactVelocities(physics, substep_seconds);
 		physicsDampenDeformation(physics, substep_seconds);
-	}
-}
-
-void physicsSolveDistanceConstraint(physics_distance_constraint_t* constraint, float inverse_dt_squared) {
-	physics_body_t* a = constraint->body_a;
-	physics_body_t* b = constraint->body_b;
-	const float inverse_mass_sum = a->inverse_mass + b->inverse_mass;
-	vec3f_t delta = vec3fSub(a->position, b->position);
-	const float length = vec3fMagnitude(delta);
-	if (length < 1.0e-6f || inverse_mass_sum == 0.0f) {
-		return;
-	}
-
-	const vec3f_t gradient = vec3fScale(delta, 1.0f / length);
-	const float constraint_value = length - constraint->rest_length;
-	const float alpha_tilde = constraint->compliance * inverse_dt_squared;
-	const float delta_lambda = (-constraint_value - alpha_tilde * constraint->lambda) /
-		(inverse_mass_sum + alpha_tilde);
-	constraint->lambda += delta_lambda;
-	a->position = vec3fAdd(a->position, vec3fScale(gradient, a->inverse_mass * delta_lambda));
-	b->position = vec3fSub(b->position, vec3fScale(gradient, b->inverse_mass * delta_lambda));
-}
-
-float physicsCalculateVolume(physics_volume_constraint_t* constraint) {
-	float volume = 0.0f;
-	for (int i = 0; i < constraint->index_count; i += 3) {
-		vec3f_t a = constraint->bodies[constraint->indices[i]]->position;
-		vec3f_t b = constraint->bodies[constraint->indices[i + 1]]->position;
-		vec3f_t c = constraint->bodies[constraint->indices[i + 2]]->position;
-		volume += vec3fDot(a, vec3fCross(b, c)) / 6.0f;
-	}
-	return volume;
-}
-
-void physicsSolveVolumeConstraint(physics_volume_constraint_t* constraint, float inverse_dt_squared) {
-	vec3f_t* gradients = constraint->gradients;
-	for (int i = 0; i < constraint->body_count; ++i) gradients[i] = vec3fZero();
-	float volume = 0.0f;
-	for (int i = 0; i < constraint->index_count; i += 3) {
-		uint16_t ia = constraint->indices[i];
-		uint16_t ib = constraint->indices[i + 1];
-		uint16_t ic = constraint->indices[i + 2];
-		vec3f_t a = constraint->bodies[ia]->position;
-		vec3f_t b = constraint->bodies[ib]->position;
-		vec3f_t c = constraint->bodies[ic]->position;
-		volume += vec3fDot(a, vec3fCross(b, c)) / 6.0f;
-		gradients[ia] = vec3fAdd(gradients[ia], vec3fScale(vec3fCross(b, c), 1.0f / 6.0f));
-		gradients[ib] = vec3fAdd(gradients[ib], vec3fScale(vec3fCross(c, a), 1.0f / 6.0f));
-		gradients[ic] = vec3fAdd(gradients[ic], vec3fScale(vec3fCross(a, b), 1.0f / 6.0f));
-	}
-
-	float denominator = 0.0f;
-	for (int i = 0; i < constraint->body_count; ++i) {
-		denominator += constraint->bodies[i]->inverse_mass * vec3fMagnitudeSqrd(gradients[i]);
-	}
-	const float alpha_tilde = constraint->compliance * inverse_dt_squared;
-	if (denominator + alpha_tilde <= 1.0e-8f) {
-		return;
-	}
-	const float constraint_value = volume - constraint->rest_volume;
-	const float delta_lambda = (-constraint_value - alpha_tilde * constraint->lambda) /
-		(denominator + alpha_tilde);
-	constraint->lambda += delta_lambda;
-	for (int i = 0; i < constraint->body_count; ++i) {
-		physics_body_t* body = constraint->bodies[i];
-		body->position = vec3fAdd(body->position,
-			vec3fScale(gradients[i], body->inverse_mass * delta_lambda));
 	}
 }
