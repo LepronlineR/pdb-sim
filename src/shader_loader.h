@@ -13,5 +13,7 @@ gpu_shader_info_t* shaderLoaderGetFlat(shader_loader_t* loader);
 gpu_shader_info_t* shaderLoaderGetPbr(shader_loader_t* loader);
 // The sky panorama, drawn behind everything (see gpu_shader_info_t.background).
 gpu_shader_info_t* shaderLoaderGetSkybox(shader_loader_t* loader);
+// pbr drawn in front of the whole scene (see gpu_shader_info_t.overlay).
+gpu_shader_info_t* shaderLoaderGetPbrOverlay(shader_loader_t* loader);
 
 #endif

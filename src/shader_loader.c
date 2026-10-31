@@ -18,6 +18,9 @@ typedef struct shader_loader_t {
 	shader_asset_t flat;
 	shader_asset_t pbr;
 	shader_asset_t skybox;
+	/* pbr drawn as an overlay: shares pbr's shader code, but is a separate
+	   shader info so it gets its own pipeline. */
+	gpu_shader_info_t pbr_overlay;
 } shader_loader_t;
 
 static void shaderLoaderLoadAsset(shader_loader_t* loader, shader_asset_t* asset,
@@ -52,6 +55,8 @@ shader_loader_t* shaderLoaderCreate(heap_t* heap, fs_t* fs) {
 		"shaders/pbr.vert.spv", "shaders/pbr.frag.spv", 1, false);
 	shaderLoaderLoadAsset(loader, &loader->skybox,
 		"shaders/skybox.vert.spv", "shaders/skybox.frag.spv", 1, true);
+	loader->pbr_overlay = loader->pbr.info;
+	loader->pbr_overlay.overlay = true;
 
 	return loader;
 }
@@ -74,4 +79,8 @@ gpu_shader_info_t* shaderLoaderGetPbr(shader_loader_t* loader) {
 
 gpu_shader_info_t* shaderLoaderGetSkybox(shader_loader_t* loader) {
 	return &loader->skybox.info;
+}
+
+gpu_shader_info_t* shaderLoaderGetPbrOverlay(shader_loader_t* loader) {
+	return &loader->pbr_overlay;
 }

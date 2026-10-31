@@ -269,7 +269,8 @@ draw_shader_t* rendererShaderModelCommand(renderer_t* render, command_model_t* c
 		gpu_pipeline_info_t pipeline_info = {
 			.shader = shader->shader,
 			.mesh_layout = command->mesh_layout,
-			.background = shader->info->background
+			.background = shader->info->background,
+			.overlay = shader->info->overlay
 		};
 		shader->pipeline = gpuCreatePipeline(render->gpu, &pipeline_info);
 	}

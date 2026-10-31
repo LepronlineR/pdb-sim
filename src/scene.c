@@ -39,6 +39,11 @@
 /* Resolution of the shared unit-sphere mesh used to draw sphere colliders. */
 #define SCENE_SPHERE_SEGMENTS 40
 #define SCENE_SPHERE_RINGS 20
+/* Move gizmo arrows: a thin shaft ending in a cone. */
+#define SCENE_GIZMO_SEGMENTS 24
+#define SCENE_GIZMO_SHAFT_RADIUS 0.03f
+#define SCENE_GIZMO_HEAD_RADIUS 0.09f
+#define SCENE_GIZMO_HEAD_LENGTH 0.28f
 /* Texture repeats across the ground's top face (24 m wide): one every 2 m. */
 #define SCENE_GROUND_UV_SCALE 12.0f
 
@@ -121,6 +126,12 @@ typedef struct scene_t {
 	uint16_t ground_indices[36];
 	gpu_mesh_info_t sphere_mesh;
 	gpu_vertex_t* sphere_vertices;
+	/* Unit arrow parts per axis, pointing along +X, +Y and +Z: [0] a shaft
+	   (cylinder of radius 1 from 0 to 1), [1] a head (cone of base radius 1
+	   from 0 to 1). Built pointing the right way, so they only need scaling. */
+	gpu_mesh_info_t gizmo_meshes[2][3];
+	gpu_vertex_t* gizmo_vertices;
+	uint16_t* gizmo_indices;
 	uint16_t* sphere_indices;
 	ecs_entity_t sky_entity;
 	ecs_entity_t ground_entity;
@@ -149,7 +160,7 @@ typedef struct scene_t {
 	int moving_id;
 	float grab_distance;
 	vec3f_t move_last_point;
-	// move gizmo: three rods then three tips, drawn with the sphere mesh
+	// move gizmo: three arrow shafts then three arrow heads
 	ecs_entity_t gizmo_entities[6];
 	int gizmo_hover_axis;  // -1 when no handle is under the cursor
 	int gizmo_drag_axis;   // -1 when no handle is being dragged
@@ -174,6 +185,7 @@ typedef struct scene_draw_uniform_t {
 } scene_draw_uniform_t;
 
 static void sceneBuildSphereMesh(scene_t* scene);
+static void sceneBuildGizmoMeshes(scene_t* scene);
 static void sceneUpdateGizmo(scene_t* scene);
 static void sceneUpdateEnvironment(scene_t* scene, ui_t* ui);
 
@@ -741,7 +753,8 @@ scene_t* sceneCreate(heap_t* heap, fs_t* fs, wm_window_t* window, renderer_t* re
 		scene->gizmo_entities[part] = sceneSpawnModel(scene, "move gizmo", vec3fZero(), vec3fOne(), NULL);
 		model_component_t* model = ecsEntityGet(scene->ecs, scene->gizmo_entities[part],
 			scene->model_type, true);
-		model->shader_info = shaderLoaderGetPbr(scene->shaders);
+		/* Drawn over the scene, so the object it moves never hides it. */
+		model->shader_info = shaderLoaderGetPbrOverlay(scene->shaders);
 	}
 	return scene;
 }
@@ -852,6 +865,7 @@ void sceneLoadResources(scene_t* scene) {
 	};
 	sceneBuildGroundMesh(scene);
 	sceneBuildSphereMesh(scene);
+	sceneBuildGizmoMeshes(scene);
 }
 
 /* A unit UV sphere: position, normal, white color and uv per vertex; the uvs
@@ -907,6 +921,86 @@ void sceneUnloadResources(scene_t* scene) {
 	textureLibraryDestroy(scene->textures);
 	heapFree(scene->heap, scene->sphere_indices);
 	heapFree(scene->heap, scene->sphere_vertices);
+	heapFree(scene->heap, scene->gizmo_indices);
+	heapFree(scene->heap, scene->gizmo_vertices);
+}
+
+typedef struct scene_mesh_builder_t {
+	gpu_vertex_t* vertices;
+	uint16_t* indices;
+	int vertex_count;
+	int index_count;
+} scene_mesh_builder_t;
+
+static void sceneMeshTriangle(scene_mesh_builder_t* builder, vec3f_t a, vec3f_t na,
+	vec3f_t b, vec3f_t nb, vec3f_t c, vec3f_t nc) {
+	const vec3f_t points[3] = { a, b, c };
+	const vec3f_t normals[3] = { na, nb, nc };
+	for (int k = 0; k < 3; ++k) {
+		builder->indices[builder->index_count++] = (uint16_t)builder->vertex_count;
+		builder->vertices[builder->vertex_count++] = (gpu_vertex_t){
+			.position = { points[k].x, points[k].y, points[k].z },
+			.normal = { normals[k].x, normals[k].y, normals[k].z },
+			.color = { 1.0f, 1.0f, 1.0f }
+		};
+	}
+}
+
+/* Shaft and head for each axis. Each part is revolved around its axis A with
+   U x V = A, and every triangle winds counter-clockwise seen from outside, like
+   the other meshes. */
+static void sceneBuildGizmoMeshes(scene_t* scene) {
+	const int segments = SCENE_GIZMO_SEGMENTS;
+	const int shaft_vertices = segments * 12;  // side quad and two cap triangles
+	const int head_vertices = segments * 6;    // side triangle and the base cap
+	const int total = 3 * (shaft_vertices + head_vertices);
+	scene->gizmo_vertices = heapAlloc(scene->heap, sizeof(gpu_vertex_t) * total, _Alignof(gpu_vertex_t));
+	scene->gizmo_indices = heapAlloc(scene->heap, sizeof(uint16_t) * total, _Alignof(uint16_t));
+	static const vec3f_t basis[3] = { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } };
+	int offset = 0;
+	for (int part = 0; part < 2; ++part) {
+		for (int axis = 0; axis < 3; ++axis) {
+			const vec3f_t a = basis[axis];
+			const vec3f_t u = basis[(axis + 1) % 3];
+			const vec3f_t v = basis[(axis + 2) % 3];
+			scene_mesh_builder_t builder = {
+				.vertices = scene->gizmo_vertices + offset,
+				.indices = scene->gizmo_indices + offset
+			};
+			const vec3f_t down = vec3fScale(a, -1.0f);
+			for (int segment = 0; segment < segments; ++segment) {
+				const float theta0 = 2.0f * (float)M_PI * (float)segment / (float)segments;
+				const float theta1 = 2.0f * (float)M_PI * (float)(segment + 1) / (float)segments;
+				const vec3f_t r0 = vec3fAdd(vec3fScale(u, cosf(theta0)), vec3fScale(v, sinf(theta0)));
+				const vec3f_t r1 = vec3fAdd(vec3fScale(u, cosf(theta1)), vec3fScale(v, sinf(theta1)));
+				if (part == 0) {
+					const vec3f_t t0 = vec3fAdd(a, r0);
+					const vec3f_t t1 = vec3fAdd(a, r1);
+					sceneMeshTriangle(&builder, r0, r0, r1, r1, t0, r0);
+					sceneMeshTriangle(&builder, r1, r1, t1, r1, t0, r0);
+					sceneMeshTriangle(&builder, a, a, t0, a, t1, a);
+					sceneMeshTriangle(&builder, vec3fZero(), down, r1, down, r0, down);
+				}
+				else {
+					/* Unit cone: the side normal leans toward the tip by 45 degrees.
+					   The tip gets one vertex per side, normal at the middle. */
+					const float theta = 0.5f * (theta0 + theta1);
+					const vec3f_t middle = vec3fAdd(vec3fScale(u, cosf(theta)), vec3fScale(v, sinf(theta)));
+					sceneMeshTriangle(&builder, r0, vec3fNorm(vec3fAdd(r0, a)), r1,
+						vec3fNorm(vec3fAdd(r1, a)), a, vec3fNorm(vec3fAdd(middle, a)));
+					sceneMeshTriangle(&builder, vec3fZero(), down, r1, down, r0, down);
+				}
+			}
+			scene->gizmo_meshes[part][axis] = (gpu_mesh_info_t){
+				.layout = GPU_MESH_LAYOUT_TRI_P444_N444_C444_U44_I2,
+				.vtx_data = builder.vertices,
+				.vtx_data_size = sizeof(gpu_vertex_t) * builder.vertex_count,
+				.idx_data = builder.indices,
+				.idx_data_size = sizeof(uint16_t) * builder.index_count
+			};
+			offset += builder.vertex_count;
+		}
+	}
 }
 
 void sceneSpawnCamera(scene_t* scene) {
@@ -1125,8 +1219,8 @@ static int sceneGizmoPick(scene_t* scene, const scene_object_t* object, vec3f_t 
 	return best_axis;
 }
 
-/* Places the gizmo's rods and tips (stretched copies of the sphere mesh) on the
-   selected object, or hides them. */
+/* Places the gizmo's arrows (a shaft and a cone head per axis) on the selected
+   object, or hides them. */
 static void sceneUpdateGizmo(scene_t* scene) {
 	scene_object_t* object = sceneGizmoTarget(scene);
 	for (int part = 0; part < 6; ++part) {
@@ -1143,21 +1237,20 @@ static void sceneUpdateGizmo(scene_t* scene) {
 		const vec3f_t center = sceneObjectPosition(object);
 		const float length = sceneGizmoLength(object);
 		const vec3f_t direction = scene_gizmo_axes[axis];
+		/* The unit part is stretched to its length along the axis and to its
+		   radius across it. */
+		const float shaft_length = length - SCENE_GIZMO_HEAD_LENGTH;
+		const float along = tip ? SCENE_GIZMO_HEAD_LENGTH : shaft_length;
+		const float radius = tip ? SCENE_GIZMO_HEAD_RADIUS : SCENE_GIZMO_SHAFT_RADIUS;
 		transformIdentity(&transform->transform);
-		if (tip) {
-			transform->transform.translation = vec3fAdd(center, vec3fScale(direction, length));
-			transform->transform.scale = (vec3f_t){ 0.14f, 0.14f, 0.14f };
-		}
-		else {
-			const float thickness = 0.045f;
-			transform->transform.translation = vec3fAdd(center, vec3fScale(direction, length * 0.5f));
-			transform->transform.scale = vec3fAdd(vec3fScale(direction, length * 0.5f - thickness),
-				(vec3f_t){ thickness, thickness, thickness });
-		}
+		transform->transform.translation = tip ?
+			vec3fAdd(center, vec3fScale(direction, shaft_length)) : center;
+		transform->transform.scale = vec3fAdd(vec3fScale(direction, along - radius),
+			(vec3f_t){ radius, radius, radius });
 		const bool active = axis == scene->gizmo_drag_axis ||
 			(scene->gizmo_drag_axis < 0 && axis == scene->gizmo_hover_axis);
 		static const float colors[3][3] = { { 1.0f, .22f, .22f }, { .30f, 1.0f, .30f }, { .30f, .45f, 1.0f } };
-		model->mesh_info = &scene->sphere_mesh;
+		model->mesh_info = &scene->gizmo_meshes[tip ? 1 : 0][axis];
 		model->tint[0] = active ? 1.4f : colors[axis][0];
 		model->tint[1] = active ? 1.2f : colors[axis][1];
 		model->tint[2] = active ? 0.2f : colors[axis][2];

@@ -13,11 +13,17 @@ typedef struct gpu_cmd_buff_t {
 	VkPipelineLayout pipeline_layout;
 	int idx_count;
 	int vtx_count;
+	/* The viewport's depth range ends here (1, or GPU_OVERLAY_DEPTH while an
+	   overlay pipeline is bound). */
+	float max_depth;
+	float viewport_width;
+	float viewport_height;
 } gpu_cmd_buff_t;
 
 typedef struct gpu_pipeline_t {
 	VkPipelineLayout pipeline_layout;
 	VkPipeline pipeline;
+	float max_depth;  // of the viewport while it is bound
 } gpu_pipeline_t;
 
 typedef struct gpu_descriptor_t {
@@ -744,6 +750,9 @@ gpu_cmd_buff_t* gpuBeginFrameUpdate(gpu_t* gpu) {
 		.maxDepth = 1.0f,
 	};
 	vkCmdSetViewport(frame->cmd_buff->buffer, 0, 1, &viewport);
+	frame->cmd_buff->max_depth = viewport.maxDepth;
+	frame->cmd_buff->viewport_width = viewport.width;
+	frame->cmd_buff->viewport_height = viewport.height;
 
 	VkRect2D scissor = {
 		.extent.width = gpu->frame_width,
@@ -874,6 +883,7 @@ void gpuCommandBindDescriptorSets(gpu_cmd_buff_t* cmd_buff, gpu_descriptor_t* de
 gpu_pipeline_t* gpuCreatePipeline(gpu_t* gpu, const gpu_pipeline_info_t* pipeline_info) {
 	gpu_pipeline_t* pipeline = heapAlloc(gpu->heap, sizeof(gpu_pipeline_t), 8);
 	memset(pipeline, 0, sizeof(*pipeline));
+	pipeline->max_depth = pipeline_info->overlay ? GPU_OVERLAY_DEPTH : 1.0f;
 
 	VkPipelineRasterizationStateCreateInfo raster_state_info = {
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
@@ -993,6 +1003,18 @@ void gpuDestroyPipeline(gpu_t* gpu, gpu_pipeline_t* pipeline) {
 void gpuCommandBindPipeline(gpu_cmd_buff_t* cmd_buff, gpu_pipeline_t* pipeline) {
 	vkCmdBindPipeline(cmd_buff->buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->pipeline);
 	cmd_buff->pipeline_layout = pipeline->pipeline_layout;
+	/* The viewport is dynamic state: overlays narrow its depth range, and the
+	   next ordinary pipeline restores it. */
+	if (cmd_buff->max_depth != pipeline->max_depth) {
+		VkViewport viewport = {
+			.width = cmd_buff->viewport_width,
+			.height = cmd_buff->viewport_height,
+			.minDepth = 0.0f,
+			.maxDepth = pipeline->max_depth
+		};
+		vkCmdSetViewport(cmd_buff->buffer, 0, 1, &viewport);
+		cmd_buff->max_depth = pipeline->max_depth;
+	}
 }
 
 //  --------------------------------------------------------------------------

@@ -52,13 +52,20 @@ typedef struct gpu_shader_info_t {
 	// Drawn behind everything (a skybox): depth test LEQUAL, no depth writes,
 	// no culling.
 	bool background;
+	// Drawn in front of everything (editor gizmos): its depth is squeezed into
+	// the nearest GPU_OVERLAY_DEPTH of the depth range, so the scene never hides
+	// it while its own parts still sort by depth.
+	bool overlay;
 } gpu_shader_info_t;
+
+#define GPU_OVERLAY_DEPTH 0.001f
 
 // PIPELINE
 typedef struct gpu_pipeline_info_t {
 	gpu_shader_t* shader;
 	gpu_mesh_layout_t mesh_layout;
 	bool background;  // see gpu_shader_info_t.background
+	bool overlay;     // see gpu_shader_info_t.overlay
 } gpu_pipeline_info_t;
 
 // DESCRIPTOR
