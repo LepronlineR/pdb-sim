@@ -17,7 +17,7 @@ This system includes various game engine support for ease of usability.
 - **Solid spheres**: static, smooth sphere colliders (not soft bodies) for cloth to fall onto and drape over.
 - **Contacts**: one XPBD contact model for particle-particle and particle-ground contact, with static and dynamic friction, restitution and rolling resistance.
 
-The solver follows Macklin et al., "Small Steps in Physics Simulation" (2019) and "Detailed Rigid Body Simulation with Extended Position Based Dynamics" (2020): each frame is split into substeps, contacts are found once per frame with a spatial hash and solved every substep, and a velocity pass applies friction and restitution. Damping removes only deformation, so falling, rolling and spinning are preserved.
+The solver follows Macklin et al., "Small Steps in Physics Simulation" (2019) and "Detailed Rigid Body Simulation with Extended Position Based Dynamics" (2020): each frame is split into 8 substeps, each solved in two passes (one is not enough for resting stacks such as cloth folded on the ground, which then vibrates), contacts are found once per frame with a spatial hash and solved every substep, and a velocity pass applies friction and restitution. Damping removes only deformation, so falling, rolling and spinning are preserved.
 
 ## Editor and play mode
 

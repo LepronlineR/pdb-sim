@@ -64,7 +64,7 @@ extern "C" ui_t* uiCreate(heap_t* heap, wm_window_t* window) {
 	ui->view.selected_id = -1;
 	ui->inspector_id = -1;
 	ui->settings.substeps = 8;
-	ui->settings.iterations = 1;
+	ui->settings.iterations = 2;
 	ui->settings.gravity = -9.81f;
 	ui->settings.static_friction = 0.6f;
 	ui->settings.dynamic_friction = 0.4f;
@@ -138,7 +138,7 @@ extern "C" void uiSetSceneView(ui_t* ui, const ui_scene_view_t* view) {
 
 extern "C" ui_sim_settings_t uiGetSimSettings(ui_t* ui) {
 	if (!ui) {
-		return ui_sim_settings_t{ 8, 1, -9.81f, 0.6f, 0.4f, 0.2f, 0.15f };
+		return ui_sim_settings_t{ 8, 2, -9.81f, 0.6f, 0.4f, 0.2f, 0.15f };
 	}
 	mutexLock(ui->mutex);
 	ui_sim_settings_t settings = ui->settings;

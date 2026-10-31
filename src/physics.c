@@ -996,7 +996,10 @@ physics_t* physicsCreate(heap_t* heap) {
 	}
 	phys->gravity = -9.81f;
 	phys->substeps = 8;
-	phys->solver_iterations = 1;
+	/* Two passes per substep: with one, stacked contacts (cloth folded on the
+	   ground, cloth on cloth) leave the near-rigid cloth springs stretched each
+	   substep, and their snap-back makes resting cloth vibrate forever. */
+	phys->solver_iterations = 2;
 	phys->static_friction = 0.6f;
 	phys->dynamic_friction = 0.4f;
 	phys->restitution = 0.2f;

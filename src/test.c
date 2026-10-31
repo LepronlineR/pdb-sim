@@ -624,12 +624,79 @@ static void testDeque(heap_t* heap) {
 	dequeDestroy(deque);
 }
 
+/* Cloth left alone comes to rest: over a long run nothing may feed it energy
+   (too-soft bending once made a crumpled cloth writhe at ~15 m/s forever).
+   The fastest particle over the last five seconds must be slow. */
+static float testClothTopSpeedAfter(heap_t* heap, cloth_info_t cloth, bool sphere, int seconds) {
+	physics_test_scene_t scene = { .heap = heap, .physics = physicsCreate(heap) };
+	if (sphere) physicsAddSphereCollider(scene.physics, (vec3f_t){ 0, 1.2f, 0 }, 1.2f);
+	testSceneAddCloth(&scene, cloth);
+	float top_speed = 0.0f;
+	for (int second = 1; second <= seconds; ++second) {
+		testSceneRun(&scene, 60);
+		if (second <= seconds - 5) continue;
+		for (int i = 0; i < scene.count[0]; ++i) {
+			top_speed = fmaxf(top_speed,
+				vec3fMagnitude(physicsGetParticleVelocity(scene.physics, scene.first[0] + i)));
+		}
+	}
+	physicsDestroy(scene.physics);
+	return top_speed;
+}
+
+/* Two free cloths dropped over the sphere: the upper one slides onto the
+   ground and the cloths rest folded on each other. The fastest particle of
+   either over the last five seconds. */
+static float testStackedClothTopSpeedAfter(heap_t* heap, int seconds) {
+	physics_test_scene_t scene = { .heap = heap, .physics = physicsCreate(heap) };
+	physicsAddSphereCollider(scene.physics, (vec3f_t){ 0, 1.2f, 0 }, 1.2f);
+	cloth_info_t lower = clothInfoDefault((vec3f_t){ 0.4f, 3.6f, 0 }, vec3fOne());
+	lower.resolution = 48;
+	lower.size = 4.4f;
+	lower.pin = CLOTH_PIN_NONE;
+	testSceneAddCloth(&scene, lower);
+	cloth_info_t upper = clothInfoDefault((vec3f_t){ -0.6f, 5.0f, 0.3f }, vec3fOne());
+	upper.pin = CLOTH_PIN_NONE;
+	testSceneAddCloth(&scene, upper);
+	float top_speed = 0.0f;
+	for (int second = 1; second <= seconds; ++second) {
+		testSceneRun(&scene, 60);
+		if (second <= seconds - 5) continue;
+		for (int body = 0; body < scene.body_count; ++body) {
+			for (int i = 0; i < scene.count[body]; ++i) {
+				top_speed = fmaxf(top_speed, vec3fMagnitude(
+					physicsGetParticleVelocity(scene.physics, scene.first[body] + i)));
+			}
+		}
+	}
+	physicsDestroy(scene.physics);
+	return top_speed;
+}
+
+static void testPhysicsClothSettles(heap_t* heap) {
+	cloth_info_t drape = clothInfoDefault((vec3f_t){ 0, 3.6f, 0 }, vec3fOne());
+	drape.resolution = 48;
+	drape.size = 4.4f;
+	drape.pin = CLOTH_PIN_NONE;
+	const float drape_speed = testClothTopSpeedAfter(heap, drape, true, 40);
+	cloth_info_t sheet = clothInfoDefault((vec3f_t){ 0, 6, 0 }, vec3fOne());
+	const float sheet_speed = testClothTopSpeedAfter(heap, sheet, false, 40);
+	const float stacked_speed = testStackedClothTopSpeedAfter(heap, 40);
+	char detail[160];
+	sprintf_s(detail, sizeof(detail),
+		"top speed over 35-40 s: drape %.3f, corner-pinned sheet %.3f, two stacked cloths %.3f m/s",
+		drape_speed, sheet_speed, stacked_speed);
+	testCheck(drape_speed < 0.5f && sheet_speed < 0.5f && stacked_speed < 0.2f,
+		"cloth comes to rest", detail);
+}
+
 int testPhysics(heap_t* heap) {
 	test_failures = 0;
 	testHashTable(heap);
 	testDeque(heap);
 	testPhysicsClothHangsFromCustomPin(heap);
 	testPhysicsClothDrapesOverSphere(heap);
+	testPhysicsClothSettles(heap);
 	testPhysicsPile(heap);
 	testPhysicsSpin(heap);
 	testPhysicsRollingStops(heap);

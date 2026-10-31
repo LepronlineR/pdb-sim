@@ -50,9 +50,12 @@ cloth_info_t clothInfoDefault(vec3f_t center, vec3f_t color) {
 		.mass = 1.0f,
 		.stretch_compliance = 1.0e-7f,
 		.shear_compliance = 1.0e-6f,
-		/* Soft: bending is skip-one distance constraints, which also resist
-		   compression, so a stiffer value keeps cloth from folding and draping. */
-		.bend_compliance = 1.0f,
+		/* Bending is skip-one distance constraints, which also resist
+		   compression: much stiffer and cloth will not fold or drape. Much
+		   softer (about 1) and, at one solver iteration, a crumpled cloth's
+		   many self-contacts keep stretching its springs and the snap-back
+		   feeds energy in: it never settles and writhes on its own. */
+		.bend_compliance = 0.1f,
 		.velocity_retention = 0.6f,
 		.drag = 0.4f,
 		.pin = CLOTH_PIN_CORNERS
